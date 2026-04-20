@@ -64,6 +64,31 @@ Two cameras:
 
 If multiple serial devices are present, pass `--port` explicitly.
 
+## Zone Calibration
+
+You can calibrate the counter polygons from the laptop before moving to the Jetson:
+
+```bash
+./scripts/run_zone_calibrator.sh --camera 0 --output configs/zones.yaml
+```
+
+For a touchscreen-sized full-screen layout:
+
+```bash
+./scripts/run_zone_calibrator.sh \
+  --camera 0 \
+  --output configs/zones.yaml \
+  --window-width 1024 \
+  --window-height 600 \
+  --fullscreen
+```
+
+The calibrator works with either touch or a mouse:
+
+- tap or click four corners to create one zone
+- `Save Zones` writes the YAML file used by the fixed-camera runtime
+- `Undo`, `Clear Pending`, and `Delete Last` help refine the layout without editing YAML by hand
+
 ## Quick Smoke Test
 
 Before opening the webcam UI, you can validate the RP2040 path directly:

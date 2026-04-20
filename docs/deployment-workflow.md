@@ -65,6 +65,30 @@ Recommended order:
 4. Restart Jetson supervisor
 5. Run dry-run or replay validation before enabling live actuation
 
+## Fixed Camera Bring-Up
+
+Start with a dry run:
+
+```bash
+./scripts/run_fixed_camera.sh --camera 0 --show-window
+```
+
+Move to the live RP2040 controller only after the camera, detections, and zone geometry look right:
+
+```bash
+./scripts/run_fixed_camera.sh \
+  --camera 0 \
+  --port /dev/ttyACM1 \
+  --live-controller \
+  --show-window
+```
+
+Calibrate the counter polygons before arming the system:
+
+```bash
+./scripts/run_zone_calibrator.sh --camera 0 --output configs/zones.yaml --fullscreen
+```
+
 ## Rollback Model
 
 - Pico: keep the previous `main.py` and `pico_config.py` in source control and redeploy the older

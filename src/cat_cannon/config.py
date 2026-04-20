@@ -56,10 +56,23 @@ def load_counter_zones(path: str | Path) -> list[CounterZone]:
     return zones
 
 
+def save_counter_zones(path: str | Path, zones: list[CounterZone]) -> None:
+    payload = {
+        "zones": [
+            {
+                "id": zone.zone_id,
+                "points": [[point.x, point.y] for point in zone.polygon],
+            }
+            for zone in zones
+        ]
+    }
+    with Path(path).open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False)
+
+
 def _load_yaml(path: str | Path) -> dict:
     with Path(path).open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
     if not isinstance(data, dict):
         raise ValueError(f"Expected mapping config at {path}")
     return data
-

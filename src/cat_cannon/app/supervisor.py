@@ -4,10 +4,23 @@ from dataclasses import dataclass
 
 from cat_cannon.adapters.interfaces import TurretController
 from cat_cannon.config import SystemConfig
-from cat_cannon.domain.models import CounterZone
+from cat_cannon.domain.models import CounterZone, SupervisorState
 from cat_cannon.domain.safety import CounterConfirmation, assess_scene
 from cat_cannon.domain.state_machine import SupervisorInputs, SupervisorStateMachine
-from cat_cannon.domain.targeting import FrameSize, compute_turret_correction
+from cat_cannon.domain.targeting import FrameSize, TurretCorrection, compute_turret_correction
+
+
+@dataclass(frozen=True)
+class SupervisorStepResult:
+    state: SupervisorState
+    fire_commanded: bool
+    human_present: bool
+    counter_confirmed: bool
+    target_visible: bool
+    aim_locked: bool
+    active_zone_id: str | None
+    candidate_track_id: str | None
+    correction: TurretCorrection | None
 
 
 @dataclass
@@ -22,7 +35,7 @@ class SupervisorLoop:
         )
         self._machine = SupervisorStateMachine(cooldown_frames=self.config.cooldown_frames)
 
-    def process_frame(self, detections, frame_width: int, frame_height: int, armed: bool) -> None:
+    def process_frame(self, detections, frame_width: int, frame_height: int, armed: bool) -> SupervisorStepResult:
         assessment = assess_scene(detections=detections, zones=self.zones, policy=self.config.detection_policy)
         counter_confirmed = self._confirmation.update(
             assessment.candidate_cat,
@@ -30,6 +43,7 @@ class SupervisorLoop:
         )
 
         aim_locked = False
+        correction: TurretCorrection | None = None
         target_visible = assessment.candidate_cat is not None and counter_confirmed
         if target_visible and assessment.candidate_cat is not None:
             correction = compute_turret_correction(
@@ -56,3 +70,14 @@ class SupervisorLoop:
         elif result.fire_commanded:
             self.controller.fire()
 
+        return SupervisorStepResult(
+            state=result.state,
+            fire_commanded=result.fire_commanded,
+            human_present=assessment.human_present,
+            counter_confirmed=counter_confirmed,
+            target_visible=target_visible,
+            aim_locked=aim_locked,
+            active_zone_id=assessment.active_zone_id,
+            candidate_track_id=assessment.candidate_cat.track_id if assessment.candidate_cat else None,
+            correction=correction,
+        )

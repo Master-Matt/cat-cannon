@@ -101,3 +101,47 @@ If the Jetson image is already provisioned and APT is offline or misconfigured:
 ```bash
 JETSON_PASSWORD=nvidia ./scripts/deploy_jetson.sh --skip-system-packages
 ```
+
+## Fixed Camera Runtime
+
+Dry-run fixed camera on Jetson or a Linux host:
+
+```bash
+./scripts/run_fixed_camera.sh --camera 0 --show-window
+```
+
+Live fixed camera with the RP2040 controller attached:
+
+```bash
+./scripts/run_fixed_camera.sh \
+  --camera 0 \
+  --port /dev/ttyACM1 \
+  --live-controller \
+  --show-window
+```
+
+By default the runtime starts disarmed. In the window:
+
+- `a` arms the system
+- `d` disarms the system
+- `q` quits
+
+## Zone Calibration
+
+Touchscreen-friendly zone calibration on a `1024x600` display:
+
+```bash
+./scripts/run_zone_calibrator.sh --camera 0 --output configs/zones.yaml --fullscreen
+```
+
+How it works:
+
+- tap four corners to create each four-sided zone
+- tap `Save Zones` when the polygons look correct
+- use the on-screen buttons or hotkeys to undo, clear pending points, or delete the last zone
+
+You can run the same calibrator from the laptop bench setup:
+
+```bash
+./scripts/run_zone_calibrator.sh --camera 0 --output configs/zones.yaml
+```
