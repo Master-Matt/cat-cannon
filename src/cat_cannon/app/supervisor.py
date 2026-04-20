@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from cat_cannon.adapters.interfaces import TurretController
+from cat_cannon.config import SystemConfig
+from cat_cannon.domain.models import CounterZone
+from cat_cannon.domain.safety import CounterConfirmation, assess_scene
+from cat_cannon.domain.state_machine import SupervisorInputs, SupervisorStateMachine
+from cat_cannon.domain.targeting import FrameSize, compute_turret_correction
+
+
+@dataclass
+class SupervisorLoop:
+    config: SystemConfig
+    zones: list[CounterZone]
+    controller: TurretController
+
+    def __post_init__(self) -> None:
+        self._confirmation = CounterConfirmation(
+            required_frames=self.config.detection_policy.consecutive_counter_frames
+        )
+        self._machine = SupervisorStateMachine(cooldown_frames=self.config.cooldown_frames)
+
+    def process_frame(self, detections, frame_width: int, frame_height: int, armed: bool) -> None:
+        assessment = assess_scene(detections=detections, zones=self.zones, policy=self.config.detection_policy)
+        counter_confirmed = self._confirmation.update(
+            assessment.candidate_cat,
+            assessment.cat_on_counter and not assessment.human_present,
+        )
+
+        aim_locked = False
+        target_visible = assessment.candidate_cat is not None and counter_confirmed
+        if target_visible and assessment.candidate_cat is not None:
+            correction = compute_turret_correction(
+                bbox=assessment.candidate_cat.bbox,
+                frame=FrameSize(width=frame_width, height=frame_height),
+                calibration=self.config.tracking_calibration,
+            )
+            aim_locked = correction.aim_locked
+            if not assessment.human_present:
+                self.controller.apply_tracking_delta(correction.pan_delta, correction.tilt_delta)
+
+        result = self._machine.advance(
+            SupervisorInputs(
+                armed=armed,
+                human_present=assessment.human_present,
+                counter_confirmed=counter_confirmed,
+                target_visible=target_visible,
+                aim_locked=aim_locked,
+            )
+        )
+
+        if assessment.human_present or not armed:
+            self.controller.safe_stop()
+        elif result.fire_commanded:
+            self.controller.fire()
+

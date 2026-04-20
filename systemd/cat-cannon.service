@@ -1,0 +1,15 @@
+[Unit]
+Description=Cat Cannon Supervisor
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cat-cannon
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/cat-cannon/.venv/bin/python -m cat_cannon.app.run
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+

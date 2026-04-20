@@ -1,0 +1,9 @@
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.pyc
+.codex
+everything-claude-code/
+src/cat_cannon.egg-info/
+yolo11*.pt

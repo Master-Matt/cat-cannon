@@ -1,0 +1,2 @@
+"""Cat Cannon application package."""
+
