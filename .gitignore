@@ -7,3 +7,5 @@ __pycache__/
 everything-claude-code/
 src/cat_cannon.egg-info/
 yolo11*.pt
+*.onnx
+*.engine

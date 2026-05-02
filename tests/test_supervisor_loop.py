@@ -77,3 +77,45 @@ def test_supervisor_loop_reports_human_lockout_and_safe_stop() -> None:
     assert result.human_present is True
     assert result.fire_commanded is False
     assert controller.stopped >= 1
+
+
+def test_supervisor_loop_does_not_apply_tracking_delta_when_disarmed() -> None:
+    supervisor, controller = _supervisor()
+
+    result = supervisor.process_frame(
+        [_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=False,
+    )
+
+    assert result.state == SupervisorState.DISARMED
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+    assert controller.stopped >= 1
+
+
+def test_supervisor_uses_turret_camera_for_targeting_when_available() -> None:
+    supervisor, controller = _supervisor()
+
+    # Cat at center of turret frame → should be aim-locked
+    turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(90, 90, 20, 20))
+
+    # Confirm counter presence via fixed camera (2 frames needed)
+    supervisor.process_frame([_cat_detection()], frame_width=200, frame_height=200, armed=True)
+    result = supervisor.process_frame(
+        [_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[turret_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+    )
+
+    assert result.counter_confirmed is True
+    assert result.target_visible is True
+    # Turret cat is centered → correction should be near zero / aim locked
+    assert result.correction is not None
+    assert result.aim_locked is True
+    assert len(controller.pan_commands) >= 1

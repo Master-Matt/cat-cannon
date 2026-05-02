@@ -91,6 +91,13 @@ class Controller:
                 self.solenoid.value(0)
                 self.fire_until_ms = None
                 return self._ok(seq, "safe_stop", self._status_payload())
+            if command == "set_fire_output":
+                active = bool(payload.get("active", False))
+                if active and not self.enabled:
+                    return self._error(seq, "disabled", self._status_payload())
+                self.fire_until_ms = None
+                self.solenoid.value(1 if active else 0)
+                return self._ok(seq, "fire_output_set", self._status_payload())
             if command == "fire":
                 if not self.enabled:
                     return self._error(seq, "disabled", self._status_payload())

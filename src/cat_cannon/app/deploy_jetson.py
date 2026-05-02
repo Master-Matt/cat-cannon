@@ -32,6 +32,12 @@ class JetsonDeployConfig:
     skip_system_packages: bool
 
 
+@dataclass(frozen=True)
+class DeployStep:
+    name: str
+    command: list[str]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy Cat Cannon to a Jetson over SSH.")
     parser.add_argument("--host", default=os.environ.get("JETSON_HOST", DEFAULT_HOST), help="Jetson hostname or IP")
@@ -48,7 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--extras",
-        default="dev,vision",
+        default="dev,bench,vision",
         help="Comma-separated extras to install remotely",
     )
     parser.add_argument("--restart-service", action="store_true", help="Restart the systemd service after deploy")
@@ -127,6 +133,7 @@ def build_rsync_command(
         ".ruff_cache/",
         ".mypy_cache/",
         "*.pyc",
+        "*.engine",
         "everything-claude-code/",
     ]
     command = [
@@ -146,6 +153,92 @@ def build_rsync_command(
         ]
     )
     return command
+
+
+_NV_TORCH_WHEEL = (
+    "https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/"
+    "torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl"
+)
+
+_TORCHVISION_PATCH = r"""
+import sys, pathlib
+site = pathlib.Path(sys.argv[1])
+
+# 1. _meta_registrations.py — disable torch dispatch registration
+(site / "torchvision" / "_meta_registrations.py").write_text("# disabled for Jetson TRT compat\n")
+
+# 2. extension.py — make _assert_has_ops() a no-op
+ext = site / "torchvision" / "extension.py"
+txt = ext.read_text()
+txt = txt.replace(
+    "def _assert_has_ops():\n    if not _has_ops():",
+    "def _assert_has_ops():\n    return\n    if not _has_ops():",
+)
+ext.write_text(txt)
+
+# 3. ops/boxes.py — pure-torch NMS fallback when C++ ops unavailable
+boxes = site / "torchvision" / "ops" / "boxes.py"
+txt = boxes.read_text()
+old = "    _assert_has_ops()\n    return torch.ops.torchvision.nms(boxes, scores, iou_threshold)"
+new = '''    from torchvision.extension import _has_ops
+    if _has_ops():
+        return torch.ops.torchvision.nms(boxes, scores, iou_threshold)
+    # Pure-torch NMS fallback for Jetson (incompatible C++ ops)
+    order = scores.argsort(descending=True)
+    keep = []
+    while order.numel() > 0:
+        i = order[0].item()
+        keep.append(i)
+        if order.numel() == 1:
+            break
+        rest = order[1:]
+        xx1 = torch.max(boxes[i, 0], boxes[rest, 0])
+        yy1 = torch.max(boxes[i, 1], boxes[rest, 1])
+        xx2 = torch.min(boxes[i, 2], boxes[rest, 2])
+        yy2 = torch.min(boxes[i, 3], boxes[rest, 3])
+        inter = (xx2 - xx1).clamp(min=0) * (yy2 - yy1).clamp(min=0)
+        area_i = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
+        area_rest = (boxes[rest, 2] - boxes[rest, 0]) * (boxes[rest, 3] - boxes[rest, 1])
+        iou = inter / (area_i + area_rest - inter)
+        mask = iou <= iou_threshold
+        order = rest[mask]
+    return torch.tensor(keep, dtype=torch.long, device=boxes.device)'''
+txt = txt.replace(old, new)
+boxes.write_text(txt)
+
+# 4. Symlink system TensorRT into venv
+trt_src = pathlib.Path("/usr/lib/python3.10/dist-packages")
+for name in ("tensorrt", "tensorrt_lean", "tensorrt_dispatch"):
+    for suffix in ("", "-10.3.0.dist-info"):
+        src = trt_src / f"{name}{suffix}"
+        dst = site / f"{name}{suffix}"
+        if src.exists() and not dst.exists():
+            dst.symlink_to(src)
+
+print("Jetson GPU patches applied")
+"""
+
+
+def build_jetson_gpu_setup_command(config: JetsonDeployConfig) -> str:
+    """Build command to install NVIDIA torch stack and patch torchvision for Jetson."""
+    remote_dir = shlex.quote(config.remote_dir)
+    site_packages = f"{config.remote_dir}/.venv/lib/python3.10/site-packages"
+    patch_script = f"{config.remote_dir}/.venv/_patch_torchvision.py"
+    commands = [
+        f"cd {remote_dir}",
+        # Install NVIDIA torch wheel (replaces PyPI torch)
+        f".venv/bin/pip install --no-cache '{_NV_TORCH_WHEEL}'",
+        # Pin numpy < 2 (NV torch compiled against numpy 1.x)
+        ".venv/bin/pip install --no-cache 'numpy<2'",
+        # Install torchvision 0.19.0 without deps (ABI-compat with NV torch 2.5)
+        ".venv/bin/pip install --no-cache --no-deps 'torchvision==0.19.0'",
+        # Install onnx for engine export
+        ".venv/bin/pip install --no-cache onnx onnxslim",
+        # Write and run the torchvision patch script
+        f"cat > {shlex.quote(patch_script)} << 'JETSON_PATCH_EOF'\n{_TORCHVISION_PATCH}JETSON_PATCH_EOF",
+        f".venv/bin/python {shlex.quote(patch_script)} {shlex.quote(site_packages)}",
+    ]
+    return " && ".join(commands)
 
 
 def build_bootstrap_command(config: JetsonDeployConfig) -> str:
@@ -194,39 +287,67 @@ def _run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def build_deploy_steps(
+    config: JetsonDeployConfig,
+    *,
+    control_path: str,
+) -> tuple[list[DeployStep], list[str]]:
+    root_dir = _repo_root()
+
+    bootstrap_connect = build_ssh_command(
+        config,
+        control_path=control_path,
+        remote_command=f"mkdir -p {shlex.quote(config.remote_dir)}",
+    )
+    sync_command = build_rsync_command(config, control_path=control_path, root_dir=root_dir)
+    bootstrap_command = build_bootstrap_command(config)
+    remote_bootstrap = build_ssh_command(
+        config,
+        control_path=control_path,
+        remote_command=bootstrap_command,
+    )
+    gpu_setup_command = build_jetson_gpu_setup_command(config)
+    remote_gpu_setup = build_ssh_command(
+        config,
+        control_path=control_path,
+        remote_command=gpu_setup_command,
+    )
+    close_command = build_ssh_command(
+        config,
+        control_path=control_path,
+        remote_command="true",
+    )
+    close_command = [*close_command[:-2], "-O", "exit", close_command[-2], close_command[-1]]
+
+    steps = [
+        DeployStep(name="ssh-bootstrap", command=bootstrap_connect),
+        DeployStep(name="rsync", command=sync_command),
+        DeployStep(name="remote-bootstrap", command=remote_bootstrap),
+        DeployStep(name="jetson-gpu-setup", command=remote_gpu_setup),
+    ]
+    return steps, close_command
+
+
 def deploy(config: JetsonDeployConfig) -> None:
     for binary in ("ssh", "rsync"):
         if shutil.which(binary) is None:
             raise JetsonDeployError(f"Required command not found: {binary}")
     if config.password and shutil.which("sshpass") is None:
         print("[jetson] sshpass not found; SSH will prompt for the password interactively.")
-
-    root_dir = _repo_root()
     with tempfile.TemporaryDirectory(prefix="cat-cannon-ssh-") as temp_dir:
         control_path = str(Path(temp_dir) / "control")
-
-        bootstrap_connect = build_ssh_command(
-            config,
-            control_path=control_path,
-            remote_command=f"mkdir -p {shlex.quote(config.remote_dir)}",
-        )
-        sync_command = build_rsync_command(config, control_path=control_path, root_dir=root_dir)
-        remote_bootstrap = build_ssh_command(
-            config,
-            control_path=control_path,
-            remote_command=build_bootstrap_command(config),
-        )
-        close_command = build_ssh_command(
-            config,
-            control_path=control_path,
-            remote_command="true",
-        )
-        close_command = [*close_command[:-2], "-O", "exit", close_command[-2], close_command[-1]]
-
-        _run(bootstrap_connect)
-        _run(sync_command)
-        _run(remote_bootstrap)
-        subprocess.run(close_command, check=False)
+        steps, close_command = build_deploy_steps(config, control_path=control_path)
+        try:
+            for step in steps:
+                print(f"[jetson] running {step.name}: {shlex.join(step.command)}")
+                _run(step.command)
+        except subprocess.CalledProcessError as exc:
+            raise JetsonDeployError(
+                f"step '{step.name}' failed with exit code {exc.returncode}\n"
+                f"command: {shlex.join(step.command)}"
+            ) from exc
+        finally:
+            subprocess.run(close_command, check=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -245,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         deploy(config)
-    except (JetsonDeployError, subprocess.CalledProcessError) as exc:
+    except JetsonDeployError as exc:
         print(f"[jetson] deployment failed: {exc}")
         return 1
 

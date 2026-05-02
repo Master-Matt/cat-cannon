@@ -89,6 +89,29 @@ Calibrate the counter polygons before arming the system:
 ./scripts/run_zone_calibrator.sh --camera 0 --output configs/zones.yaml --fullscreen
 ```
 
+## Tracking Test over SSH X Forwarding
+
+The tracking test UI is intended for bring-up with both Jetson cameras connected. It shows the
+fixed camera with YOLO/zone/supervisor overlays, the turret camera for visual confirmation, and
+teleop buttons for arm, safe stop, pan/tilt, and fire.
+
+From the laptop:
+
+```bash
+ssh -Y mdev@192.168.55.1
+cd ~/cat_cannon
+./scripts/run_tracking_test_x11.sh --live-controller --port /dev/ttyACM1
+```
+
+Useful defaults can be overridden without retyping the full command:
+
+```bash
+CAT_CANNON_FIXED_CAMERA=/dev/video0 CAT_CANNON_TURRET_CAMERA=/dev/video2 ./scripts/run_tracking_test_x11.sh
+```
+
+The tracking screen can switch to zone calibration with the `Zone Calibrator` button or `z`. The
+zone calibration screen can switch back with the `Tracking Test` button or `t`.
+
 ## Rollback Model
 
 - Pico: keep the previous `main.py` and `pico_config.py` in source control and redeploy the older

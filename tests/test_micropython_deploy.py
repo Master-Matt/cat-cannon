@@ -14,6 +14,7 @@ class FakeTransport:
         self.read_chunks = list(read_chunks or [])
         self.until_chunks = list(until_chunks or [])
         self.writes = []
+        self.reset_input_buffer_count = 0
         self.flush_count = 0
         self.closed = False
 
@@ -33,6 +34,9 @@ class FakeTransport:
         if not self.until_chunks:
             raise AssertionError(f"Unexpected read_until({marker!r})")
         return self.until_chunks.pop(0)
+
+    def reset_input_buffer(self) -> None:
+        self.reset_input_buffer_count += 1
 
     def flush(self) -> None:
         self.flush_count += 1
@@ -61,7 +65,8 @@ def test_write_text_file_enters_raw_repl_and_chunks_writes() -> None:
     )
 
     assert transport.writes == [
-        b"\r\x03\x03\x01",
+        b"\r\x03\x03",
+        b"\x01",
         b"f = open('main.py', 'w')",
         b"\x04",
         b"f.write('abcd')",
@@ -77,7 +82,8 @@ def test_write_text_file_retries_after_normal_repl_banner() -> None:
     transport = FakeTransport(
         read_chunks=[b"OK", b"OK", b"OK"],
         until_chunks=[
-            b'MicroPython v1.28.0 on 2026-04-06; Raspberry Pi Pico with RP2040\r\nType "help()" for more information.\r\n>',
+            b"MicroPython v1.28.0 on 2026-04-06; Raspberry Pi Pico with RP2040\r\n"
+            b'Type "help()" for more information.\r\n>',
             b"raw REPL; CTRL-B to exit\r\n>",
             b"\x04",
             b"\x04",
@@ -98,7 +104,88 @@ def test_write_text_file_retries_after_normal_repl_banner() -> None:
         chunk_size=8,
     )
 
-    assert transport.writes[:2] == [b"\r\x03\x03\x01", b"\r\x03\x03\x01"]
+    assert transport.writes[:4] == [b"\r\x03\x03", b"\x01", b"\r\x03\x03", b"\x01"]
+
+
+def test_write_text_file_accepts_existing_raw_repl_prompt() -> None:
+    transport = FakeTransport(
+        read_chunks=[b"OK", b"OK", b"OK"],
+        until_chunks=[
+            b">",
+            b"\x04",
+            b"\x04",
+            b">",
+            b"\x04",
+            b"\x04",
+            b">",
+            b"\x04",
+            b"\x04",
+            b">",
+        ],
+    )
+
+    write_text_file(
+        transport=transport,
+        remote_path="main.py",
+        content="abc",
+        chunk_size=8,
+    )
+
+    assert transport.writes[:2] == [b"\r\x03\x03", b"\x01"]
+
+
+def test_write_text_file_skips_prompt_noise_before_raw_repl_ack() -> None:
+    transport = FakeTransport(
+        read_chunks=[b"> ", b"OK", b"OK", b"OK"],
+        until_chunks=[
+            b"raw REPL; CTRL-B to exit\r\n>",
+            b"\x04",
+            b"\x04",
+            b">",
+            b"\x04",
+            b"\x04",
+            b">",
+            b"\x04",
+            b"\x04",
+            b">",
+        ],
+    )
+
+    write_text_file(
+        transport=transport,
+        remote_path="main.py",
+        content="abc",
+        chunk_size=8,
+    )
+
+    assert transport.writes[:4] == [b"\r\x03\x03", b"\x01", b"f = open('main.py', 'w')", b"\x04"]
+
+
+def test_write_text_file_resets_input_before_raw_repl_to_drop_stale_prompts() -> None:
+    transport = FakeTransport(
+        read_chunks=[b"OK", b"OK", b"OK"],
+        until_chunks=[
+            b"raw REPL; CTRL-B to exit\r\n>",
+            b"\x04",
+            b"\x04",
+            b">",
+            b"\x04",
+            b"\x04",
+            b">",
+            b"\x04",
+            b"\x04",
+            b">",
+        ],
+    )
+
+    write_text_file(
+        transport=transport,
+        remote_path="main.py",
+        content="abc",
+        chunk_size=8,
+    )
+
+    assert transport.reset_input_buffer_count >= 2
 
 
 def test_write_text_file_raises_after_exhausting_raw_repl_retries() -> None:
@@ -138,8 +225,9 @@ def test_deploy_files_uploads_all_files_and_resets_board(tmp_path: Path) -> None
         transport_factory=fake_transport_factory,
     )
 
-    assert transport.writes[:13] == [
-        b"\r\x03\x03\x01",
+    assert transport.writes[:14] == [
+        b"\r\x03\x03",
+        b"\x01",
         b"f = open('main.py', 'w')",
         b"\x04",
         b"f.write(\"print('hello')\\n\")",
@@ -153,6 +241,9 @@ def test_deploy_files_uploads_all_files_and_resets_board(tmp_path: Path) -> None
         b"f.close()",
         b"\x04",
     ]
-    assert transport.writes[-2:] == [b"import machine\nmachine.reset()\n", b"\x04"]
+    assert transport.writes[-2:] == [
+        b"import machine\nmachine.reset()\n",
+        b"\x04",
+    ]
     assert transport.flush_count == 1
     assert transport.closed

@@ -1,0 +1,17 @@
+# Persistent V4L2 device symlinks for Cat Cannon cameras.
+# Install: sudo cp systemd/99-cat-cannon-cameras.rules /etc/udev/rules.d/
+# Reload: sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Hardware discovered on Jetson:
+#   video0: 32e4:9601 "HD USB Camera" serial=2020032501 path=platform-3610000.usb-usb-0:2.1:1.0
+#   video2: 32e4:62f0 "USB Camera"    serial=2020022601 path=platform-3610000.usb-usb-0:2.2:1.0
+
+# Fixed perception camera (overhead/counter view) — USB Camera 32e4:62f0
+#SUBSYSTEM=="video4linux", ATTRS{idVendor}=="32e4", ATTRS{idProduct}=="62f0", ATTR{index}=="0", SYMLINK+="fixed_cam"
+
+# Turret tracking camera (mounted on pan/tilt) — HD USB Camera 32e4:9601
+#SUBSYSTEM=="video4linux", ATTRS{idVendor}=="32e4", ATTRS{idProduct}=="9601", ATTR{index}=="0", SYMLINK+="turret_cam"
+
+# Match by USB port path (stable across reboots regardless of enumeration order)
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-3610000.usb-usb-0:2.2:1.0", ATTR{index}=="0", SYMLINK+="fixed_cam"
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-3610000.usb-usb-0:2.1:1.0", ATTR{index}=="0", SYMLINK+="turret_cam"

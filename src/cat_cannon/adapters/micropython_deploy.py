@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable, Iterable
 
 try:
     import serial
@@ -15,6 +15,8 @@ DEFAULT_TIMEOUT = 1.0
 DEFAULT_CHUNK_SIZE = 192
 DEFAULT_RAW_REPL_ATTEMPTS = 3
 DEFAULT_RAW_REPL_RETRY_DELAY_S = 0.2
+DEFAULT_INTERRUPT_SETTLE_S = 0.05
+DEFAULT_ACK_READ_ATTEMPTS = 4
 
 
 class MicroPythonDeployError(RuntimeError):
@@ -32,6 +34,12 @@ def _read_until(transport, marker: bytes) -> bytes:
     return chunk
 
 
+def _reset_input_buffer(transport) -> None:
+    reset_input_buffer = getattr(transport, "reset_input_buffer", None)
+    if reset_input_buffer is not None:
+        reset_input_buffer()
+
+
 def _enter_raw_repl(
     transport,
     *,
@@ -40,9 +48,13 @@ def _enter_raw_repl(
 ) -> None:
     last_banner = b""
     for attempt in range(attempts):
-        transport.write(b"\r\x03\x03\x01")
+        _reset_input_buffer(transport)
+        transport.write(b"\r\x03\x03")
+        time.sleep(DEFAULT_INTERRUPT_SETTLE_S)
+        _reset_input_buffer(transport)
+        transport.write(b"\x01")
         banner = _read_until(transport, b">")
-        if b"raw REPL" in banner:
+        if b"raw REPL" in banner or banner.strip() == b">":
             return
         last_banner = banner
         if attempt < attempts - 1:
@@ -55,7 +67,16 @@ def _exec_raw(transport, command: str) -> str:
     transport.write(command.encode("utf-8"))
     transport.write(b"\x04")
 
-    acknowledgement = transport.read(2)
+    acknowledgement = b""
+    for _ in range(DEFAULT_ACK_READ_ATTEMPTS):
+        chunk = transport.read(2)
+        if chunk == b"OK":
+            acknowledgement = chunk
+            break
+        if chunk.strip() in {b"", b">"}:
+            continue
+        acknowledgement = chunk
+        break
     if acknowledgement != b"OK":
         raise MicroPythonDeployError(
             f"Raw REPL did not acknowledge command; received {acknowledgement!r}"

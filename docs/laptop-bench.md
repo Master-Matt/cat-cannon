@@ -88,6 +88,25 @@ The calibrator works with either touch or a mouse:
 - tap or click four corners to create one zone
 - `Save Zones` writes the YAML file used by the fixed-camera runtime
 - `Undo`, `Clear Pending`, and `Delete Last` help refine the layout without editing YAML by hand
+- `Tracking Test` switches directly into the tracking/teleop screen
+
+## Tracking Test UI
+
+With both cameras connected, open the tracking screen:
+
+```bash
+./scripts/run_tracking_test.sh --fixed-camera 0 --turret-camera 2
+```
+
+On the Jetson with udev symlinks, use the device paths:
+
+```bash
+./scripts/run_tracking_test.sh --fixed-camera /dev/fixed_cam --turret-camera /dev/turret_cam
+```
+
+The fixed camera pane shows detections, zones, and tracking state. The turret camera pane is for
+visual confirmation while using the on-screen teleop buttons or `e`, `x`, `w/a/s/d`, `space`, `p`,
+and `q`.
 
 ## Quick Smoke Test
 
@@ -101,6 +120,32 @@ Live fire path:
 
 ```bash
 ./scripts/smoke_test.sh
+```
+
+## SSH Teleop
+
+If the Pico is attached to the Jetson and you are SSH'd in from the laptop, use:
+
+```bash
+./scripts/run_teleop.sh --port /dev/ttyACM1
+```
+
+Controls:
+
+- `e`: arm
+- `x`: disarm and safe stop
+- `w`: tilt up
+- `a`: pan left
+- `s`: tilt down
+- `d`: pan right
+- `space`: fire once
+- `p`: print status
+- `q`: quit
+
+For relay and solenoid bench debugging, you can temporarily use a longer pulse:
+
+```bash
+./scripts/run_teleop.sh --port /dev/ttyACM1 --fire-ms 750 --arm-on-start
 ```
 
 ## Keyboard Controls

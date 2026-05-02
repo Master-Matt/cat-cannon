@@ -44,7 +44,11 @@ class SupervisorStateMachine:
         if self.state == SupervisorState.COOLDOWN:
             self._cooldown_remaining = max(0, self._cooldown_remaining - 1)
             if self._cooldown_remaining == 0:
-                self.state = SupervisorState.IDLE
+                # Re-fire immediately if target is still centered
+                if inputs.counter_confirmed and inputs.aim_locked:
+                    self.state = SupervisorState.AIM_LOCK
+                else:
+                    self.state = SupervisorState.IDLE
             return TransitionResult(self.state, fire_commanded=False)
 
         if self.state == SupervisorState.DISARMED:

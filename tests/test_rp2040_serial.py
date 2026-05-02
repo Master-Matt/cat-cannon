@@ -33,6 +33,15 @@ def test_controller_sends_expected_fire_command() -> None:
     assert transport.writes == [b'{"seq":1,"command":"fire","payload":{"duration_ms":140}}\n']
 
 
+def test_controller_sends_expected_set_fire_output_command() -> None:
+    transport = FakeSerial([b'{"ok":true,"seq":1,"status":"fire_output_set","payload":{"solenoid_active":true}}\n'])
+    controller = RP2040SerialController(transport=transport)
+
+    controller.set_fire_output(True)
+
+    assert transport.writes == [b'{"seq":1,"command":"set_fire_output","payload":{"active":true}}\n']
+
+
 def test_controller_raises_on_failed_response() -> None:
     transport = FakeSerial([b'{"ok":false,"seq":1,"status":"disabled","payload":{}}\n'])
     controller = RP2040SerialController(transport=transport)

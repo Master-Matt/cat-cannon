@@ -3,9 +3,18 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
+from cat_cannon.adapters.ultralytics_yolo import (
+    UltralyticsYoloDetector,
+    YoloRuntimeConfig,
+    build_detection_summary,
+)
 from cat_cannon.app.zone_calibration import CalibrationLayout, ZoneCalibrationSession, map_display_to_frame
-from cat_cannon.config import load_counter_zones, save_counter_zones
+from cat_cannon.config import load_counter_zones, load_system_config, save_counter_zones
+from cat_cannon.domain.models import CounterZone, Detection
+
+ScreenName = Literal["zone_calibration", "tracking_test"]
 
 
 def _require_cv2():
@@ -21,13 +30,19 @@ def _require_cv2():
 
 @dataclass(frozen=True)
 class CalibrationConfig:
-    camera: int
+    camera: int | str
     output_path: str
     zone_prefix: str
     window_width: int
     window_height: int
     panel_width: int
     fullscreen: bool
+    detect: bool = True
+    detect_interval: int = 3
+    yolo_model: str = "yolo11s.pt"
+    yolo_device: str | None = None
+    yolo_imgsz: int = 640
+    config_path: str = "configs/app.example.yaml"
 
 
 @dataclass(frozen=True)
@@ -45,22 +60,37 @@ class UiButton:
 
 def parse_args() -> CalibrationConfig:
     parser = argparse.ArgumentParser(description="Touchscreen counter-zone calibration tool")
-    parser.add_argument("--camera", type=int, default=0, help="Camera index to calibrate against")
+    parser.add_argument("--camera", default="/dev/fixed_cam", help="Camera device path or index")
     parser.add_argument("--output", default="configs/zones.example.yaml", help="Output YAML path")
     parser.add_argument("--zone-prefix", default="zone", help="Prefix for generated zone ids")
     parser.add_argument("--window-width", type=int, default=1024, help="Calibration window width")
     parser.add_argument("--window-height", type=int, default=600, help="Calibration window height")
     parser.add_argument("--panel-width", type=int, default=224, help="Control panel width")
     parser.add_argument("--fullscreen", action="store_true", help="Open the calibration UI in fullscreen mode")
+    parser.add_argument("--no-detect", action="store_true", help="Disable YOLO overlay for slow/debug sessions")
+    parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
+    parser.add_argument("--yolo-device", default=None, help="Inference device")
+    parser.add_argument("--yolo-imgsz", type=int, default=640, help="Inference image size")
+    parser.add_argument("--config", default="configs/app.example.yaml", help="System config path")
     args = parser.parse_args()
+    camera_arg = args.camera
+    try:
+        camera_arg = int(camera_arg)
+    except ValueError:
+        pass
     return CalibrationConfig(
-        camera=args.camera,
+        camera=camera_arg,
         output_path=args.output,
         zone_prefix=args.zone_prefix,
         window_width=args.window_width,
         window_height=args.window_height,
         panel_width=args.panel_width,
         fullscreen=bool(args.fullscreen),
+        detect=not args.no_detect,
+        yolo_model=args.yolo_model,
+        yolo_device=args.yolo_device,
+        yolo_imgsz=args.yolo_imgsz,
+        config_path=args.config,
     )
 
 
@@ -101,10 +131,11 @@ def preview_padding(layout: CalibrationLayout) -> tuple[int, int, int, int]:
 def _build_buttons(config: CalibrationConfig) -> list[UiButton]:
     panel_x = config.window_width - config.panel_width
     button_width = config.panel_width - 32
-    button_height = 58
-    top = 120
-    spacing = 18
+    button_height = 50
+    top = 112
+    spacing = 12
     labels = [
+        ("tracking", "Tracking Test"),
         ("save", "Save Zones"),
         ("undo", "Undo"),
         ("clear", "Clear Pending"),
@@ -193,6 +224,36 @@ def _draw_pending_points(cv2, canvas, points, layout: CalibrationLayout, frame_w
         cv2.line(canvas, display_points[index], display_points[index + 1], (0, 255, 0), 2)
 
 
+def _draw_detections_on_preview(
+    cv2,
+    preview,
+    detections: list[Detection],
+    frame_width: int,
+    frame_height: int,
+    preview_width: int,
+    preview_height: int,
+) -> None:
+    scale_x = preview_width / frame_width
+    scale_y = preview_height / frame_height
+    colors = {"cat": (0, 165, 255), "person": (0, 0, 255)}
+    for detection in detections:
+        x1 = int(detection.bbox.x * scale_x)
+        y1 = int(detection.bbox.y * scale_y)
+        x2 = int((detection.bbox.x + detection.bbox.width) * scale_x)
+        y2 = int((detection.bbox.y + detection.bbox.height) * scale_y)
+        color = colors.get(detection.label, (255, 255, 0))
+        cv2.rectangle(preview, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(
+            preview,
+            f"{detection.label} {detection.confidence:.2f}",
+            (x1, max(14, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+        )
+
+
 def _render_ui(
     *,
     cv2,
@@ -202,8 +263,21 @@ def _render_ui(
     buttons: list[UiButton],
     output_path: str,
     status_message: str,
+    detections: list[Detection] | None = None,
+    detection_summary: str = "",
 ):
     preview = cv2.resize(frame, (layout.preview_width, layout.preview_height))
+    if detections:
+        frame_height, frame_width = frame.shape[:2]
+        _draw_detections_on_preview(
+            cv2,
+            preview,
+            detections,
+            frame_width,
+            frame_height,
+            layout.preview_width,
+            layout.preview_height,
+        )
     top, bottom, left, right = preview_padding(layout)
     canvas = cv2.copyMakeBorder(
         preview,
@@ -259,13 +333,23 @@ def _render_ui(
     )
     cv2.putText(
         canvas,
-        "Hotkeys: s save  u undo  x clear  r remove  q quit",
+        "Hotkeys: t tracking  s save  u undo  x clear  r remove  q quit",
         (layout.panel_x + 16, layout.window_height - 54),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
         (200, 200, 200),
         1,
     )
+    if detection_summary:
+        cv2.putText(
+            canvas,
+            detection_summary,
+            (layout.panel_x + 16, layout.window_height - 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 200, 255),
+            1,
+        )
 
     for button in buttons:
         _draw_button(cv2, canvas, button)
@@ -276,9 +360,8 @@ def _render_ui(
     return canvas
 
 
-def main() -> None:
+def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
     cv2 = _require_cv2()
-    config = parse_args()
     output_path = Path(config.output_path)
     session = ZoneCalibrationSession(zone_prefix=config.zone_prefix)
     if output_path.exists():
@@ -287,9 +370,22 @@ def main() -> None:
         except Exception:
             pass
 
-    camera = cv2.VideoCapture(config.camera)
-    if not camera.isOpened():
-        raise SystemExit(f"Failed to open camera index {config.camera}")
+    detector = None
+    detection_policy = None
+    if config.detect:
+        system_config = load_system_config(config.config_path)
+        detection_policy = system_config.detection_policy
+        detector = UltralyticsYoloDetector.open(
+            policy=detection_policy,
+            runtime=YoloRuntimeConfig(
+                model_path=config.yolo_model,
+                device=config.yolo_device,
+                imgsz=config.yolo_imgsz,
+            ),
+        )
+
+    from cat_cannon.adapters.camera import open_camera
+    camera = open_camera(cv2, config.camera)
 
     window_name = "cat-cannon-zone-calibration"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -302,15 +398,19 @@ def main() -> None:
     latest_frame = None
     latest_layout = None
     should_exit = False
+    next_screen: ScreenName | None = None
 
     def on_mouse(event, x, y, _flags, _userdata):
-        nonlocal status_message, should_exit
+        nonlocal status_message, should_exit, next_screen
         if event != cv2.EVENT_LBUTTONDOWN or latest_frame is None or latest_layout is None:
             return
 
         for button in buttons:
             if button.contains(x, y):
-                if button.key == "save":
+                if button.key == "tracking":
+                    next_screen = "tracking_test"
+                    should_exit = True
+                elif button.key == "save":
                     save_counter_zones(output_path, session.zones)
                     status_message = f"Saved {len(session.zones)} zones to {output_path}"
                 elif button.key == "undo":
@@ -354,10 +454,14 @@ def main() -> None:
     cv2.setMouseCallback(window_name, on_mouse)
 
     try:
+        frame_counter = 0
+        detections: list[Detection] = []
+        detection_summary = ""
+
         while True:
             ok, frame = camera.read()
             if not ok:
-                raise SystemExit(f"Failed to read from camera index {config.camera}")
+                raise SystemExit(f"Failed to read from camera {config.camera}")
             latest_frame = frame.copy()
             latest_layout = _build_layout(
                 frame_width=frame.shape[1],
@@ -366,6 +470,16 @@ def main() -> None:
                 window_height=config.window_height,
                 panel_width=config.panel_width,
             )
+
+            if detector is not None and detection_policy is not None:
+                if frame_counter % config.detect_interval == 0:
+                    perception = detector.detect(frame, source_id="fixed")
+                    detections = perception.detections
+                    detection_summary = build_detection_summary(
+                        detections=detections, policy=detection_policy
+                    )
+            frame_counter += 1
+
             canvas = _render_ui(
                 cv2=cv2,
                 frame=frame,
@@ -374,15 +488,20 @@ def main() -> None:
                 buttons=buttons,
                 output_path=str(output_path),
                 status_message=status_message,
+                detections=detections,
+                detection_summary=detection_summary,
             )
             cv2.imshow(window_name, canvas)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(16) & 0xFF
             if should_exit:
                 break
             if key == 255:
                 continue
             if key == ord("q"):
+                break
+            if key == ord("t"):
+                next_screen = "tracking_test"
                 break
             if key == ord("s"):
                 save_counter_zones(output_path, session.zones)
@@ -404,6 +523,34 @@ def main() -> None:
     finally:
         camera.release()
         cv2.destroyAllWindows()
+
+    return next_screen
+
+
+def run_calibration_with_navigation(config: CalibrationConfig) -> None:
+    current: ScreenName | None = "zone_calibration"
+    while current is not None:
+        if current == "zone_calibration":
+            current = run_calibration_screen(config)
+            continue
+
+        from cat_cannon.app.tracking_test import TrackingTestConfig, run_tracking_test_screen
+
+        current = run_tracking_test_screen(
+            TrackingTestConfig(
+                fixed_camera=config.camera,
+                turret_camera="/dev/turret_cam",
+                zones_path=config.output_path,
+                window_width=config.window_width,
+                window_height=config.window_height,
+                panel_width=max(260, config.panel_width),
+                fullscreen=config.fullscreen,
+            )
+        )
+
+
+def main() -> None:
+    run_calibration_with_navigation(parse_args())
 
 
 if __name__ == "__main__":

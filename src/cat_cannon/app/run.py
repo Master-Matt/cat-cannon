@@ -30,7 +30,7 @@ def _require_cv2():
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    camera: int
+    camera: int | str
     port: str | None
     baudrate: int
     config_path: str
@@ -46,12 +46,12 @@ class RuntimeConfig:
 
 def parse_args() -> RuntimeConfig:
     parser = argparse.ArgumentParser(description="Cat Cannon fixed-camera runtime")
-    parser.add_argument("--camera", type=int, default=0, help="Fixed camera index")
+    parser.add_argument("--camera", default="/dev/fixed_cam", help="Fixed camera device path or index")
     parser.add_argument("--port", help="RP2040 serial port, e.g. /dev/ttyACM0")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--config", default="configs/app.example.yaml", help="System config path")
     parser.add_argument("--zones", default="configs/zones.example.yaml", help="Counter zones config path")
-    parser.add_argument("--yolo-model", default="yolo11n.pt", help="Ultralytics model path or name")
+    parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
     parser.add_argument("--yolo-device", default=None, help="Optional inference device, e.g. cpu or 0")
     parser.add_argument("--yolo-imgsz", type=int, default=640, help="Inference image size")
     parser.add_argument(
@@ -72,8 +72,13 @@ def parse_args() -> RuntimeConfig:
         help="How often to print status while headless",
     )
     args = parser.parse_args()
+    camera_val = args.camera
+    try:
+        camera_val = int(camera_val)
+    except (TypeError, ValueError):
+        pass
     return RuntimeConfig(
-        camera=args.camera,
+        camera=camera_val,
         port=args.port,
         baudrate=args.baudrate,
         config_path=args.config,
@@ -88,11 +93,9 @@ def parse_args() -> RuntimeConfig:
     )
 
 
-def _open_camera(cv2, index: int):
-    camera = cv2.VideoCapture(index)
-    if not camera.isOpened():
-        raise SystemExit(f"Failed to open camera index {index}")
-    return camera
+def _open_camera(cv2, device: int | str):
+    from cat_cannon.adapters.camera import open_camera
+    return open_camera(cv2, device)
 
 
 def _resolve_port(port: str | None) -> str:
@@ -275,7 +278,7 @@ def main() -> None:
                 )
                 cv2.imshow("cat-cannon-fixed-camera", frame)
 
-                key = cv2.waitKey(1) & 0xFF
+                key = cv2.waitKey(16) & 0xFF
                 if key == 255:
                     continue
                 if key == ord("q"):

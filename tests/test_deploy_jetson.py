@@ -1,8 +1,11 @@
 from pathlib import Path
 
 from cat_cannon.app.deploy_jetson import (
+    DEFAULT_HOST,
     JetsonDeployConfig,
     build_bootstrap_command,
+    build_deploy_steps,
+    build_jetson_gpu_setup_command,
     build_rsync_command,
     build_ssh_command,
 )
@@ -30,6 +33,14 @@ def test_build_bootstrap_command_installs_repo_with_extras() -> None:
     assert "cd /home/mdev/cat_cannon" in command
     assert "python3 -m venv .venv" in command
     assert ".venv/bin/python -m pip install -e '.[dev,vision]'" in command
+
+
+def test_parse_args_installs_bench_extra_by_default_for_opencv_uis() -> None:
+    from cat_cannon.app.deploy_jetson import parse_args
+
+    args = parse_args([])
+
+    assert args.extras == "dev,bench,vision"
 
 
 def test_build_bootstrap_command_can_restart_and_install_service() -> None:
@@ -118,3 +129,28 @@ def test_build_rsync_command_excludes_local_virtualenv_and_cache() -> None:
     assert "--exclude=.pytest_cache/" in command
     assert "--exclude=everything-claude-code/" in command
     assert command[-2:] == ["/workspace/cat_cannon/", "mdev@192.168.55.1:/home/mdev/cat_cannon/"]
+
+
+def test_build_deploy_steps_returns_named_phases() -> None:
+    config = JetsonDeployConfig(
+        host=DEFAULT_HOST,
+        user="mdev",
+        password=None,
+        remote_dir="/home/mdev/cat_cannon",
+        extras=("dev",),
+        restart_service=False,
+        install_service=False,
+        service_name="cat-cannon",
+        skip_system_packages=True,
+    )
+
+    steps, close_command = build_deploy_steps(config, control_path="/tmp/cat-cannon-test/control")
+
+    assert [step.name for step in steps] == [
+        "ssh-bootstrap", "rsync", "remote-bootstrap", "jetson-gpu-setup",
+    ]
+    assert steps[0].command[0] == "ssh"
+    assert steps[1].command[0] == "rsync"
+    assert steps[2].command[0] == "ssh"
+    assert steps[3].command[0] == "ssh"
+    assert close_command[-4:] == ["-O", "exit", f"mdev@{DEFAULT_HOST}", "true"]

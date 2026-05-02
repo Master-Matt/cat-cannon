@@ -86,8 +86,11 @@ def test_build_detection_summary_counts_cats_and_people() -> None:
     assert build_detection_summary(detections=detections, policy=_policy()) == "cats=2 people=1"
 
 
-def test_runtime_config_defaults_to_yolo11n_model() -> None:
+def test_runtime_config_defaults_to_bundled_model() -> None:
     config = YoloRuntimeConfig()
 
-    assert config.model_path == "yolo11n.pt"
+    assert config.model_path == ""
+    resolved = config.resolved_model_path()
+    assert "yolo11s" in resolved
+    assert resolved.endswith((".engine", ".onnx", ".pt"))
     assert config.imgsz == 640

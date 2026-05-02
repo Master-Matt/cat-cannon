@@ -1,6 +1,6 @@
 system:
   arm_required: true
-  cooldown_frames: 45
+  cooldown_frames: 10
 
 detection:
   cat_class: cat

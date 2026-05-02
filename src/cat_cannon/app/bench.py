@@ -50,7 +50,7 @@ def parse_args() -> BenchConfig:
     parser.add_argument("--fire-ms", type=int, default=120, help="Solenoid pulse duration")
     parser.add_argument("--detect", action="store_true", help="Enable YOLO11 detection overlay")
     parser.add_argument("--config", default="configs/app.example.yaml", help="System config path")
-    parser.add_argument("--yolo-model", default="yolo11n.pt", help="Ultralytics model path or name")
+    parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
     parser.add_argument("--yolo-device", default=None, help="Optional inference device, e.g. cpu or 0")
     parser.add_argument("--yolo-imgsz", type=int, default=640, help="Inference image size")
     args = parser.parse_args()
@@ -197,7 +197,7 @@ def main() -> None:
             combined = _combine_frames(cv2, primary_frame, secondary_frame)
             cv2.imshow("cat-cannon-bench", combined)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(16) & 0xFF
             if key == 255:
                 continue
 

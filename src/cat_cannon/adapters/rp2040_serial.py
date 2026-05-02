@@ -76,6 +76,9 @@ class RP2040SerialController(TurretController):
     def fire(self) -> None:
         self._send("fire", duration_ms=self.fire_pulse_ms)
 
+    def set_fire_output(self, active: bool) -> ControllerResponse:
+        return self._send("set_fire_output", active=active)
+
     def safe_stop(self) -> None:
         self._send("safe_stop")
 
@@ -88,6 +91,7 @@ class RP2040SerialController(TurretController):
     def _send(self, command: str, **payload: object) -> ControllerResponse:
         with self._io_lock:
             self._sequence += 1
+            self.transport.reset_input_buffer()
             request = build_request(self._sequence, command, **payload)
             self.transport.write(request.to_wire())
             response = self._read_response(command=command, sequence=self._sequence)

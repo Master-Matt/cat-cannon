@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from cat_cannon.app.calibrate_zones import preview_padding
+from cat_cannon.app.calibrate_zones import CalibrationConfig, _build_buttons, preview_padding
 from cat_cannon.app.zone_calibration import (
     CalibrationLayout,
     ZoneCalibrationSession,
@@ -97,3 +97,69 @@ def test_preview_padding_is_non_negative_for_1024x600_touch_layout() -> None:
     )
 
     assert preview_padding(layout) == (0, 0, 0, 0)
+
+
+def test_calibration_config_defaults_detect_enabled_with_yolo_settings() -> None:
+    config = CalibrationConfig(
+        camera=0,
+        output_path="configs/zones.yaml",
+        zone_prefix="zone",
+        window_width=1024,
+        window_height=600,
+        panel_width=224,
+        fullscreen=False,
+    )
+
+    assert config.detect is True
+    assert config.yolo_model == "yolo11s.pt"
+    assert config.yolo_device is None
+    assert config.yolo_imgsz == 640
+    assert config.config_path == "configs/app.example.yaml"
+
+
+def test_calibration_config_no_detect_disables_yolo() -> None:
+    config = CalibrationConfig(
+        camera=0,
+        output_path="configs/zones.yaml",
+        zone_prefix="zone",
+        window_width=1024,
+        window_height=600,
+        panel_width=224,
+        fullscreen=False,
+        detect=False,
+    )
+
+    assert config.detect is False
+
+
+def test_zone_calibrator_has_tracking_test_navigation_button() -> None:
+    buttons = _build_buttons(
+        CalibrationConfig(
+            camera=0,
+            output_path="configs/zones.yaml",
+            zone_prefix="zone",
+            window_width=1024,
+            window_height=600,
+            panel_width=224,
+            fullscreen=False,
+        )
+    )
+
+    assert buttons[0].key == "tracking"
+    assert buttons[0].label == "Tracking Test"
+
+
+def test_zone_calibrator_defaults_to_detection_overlay_enabled() -> None:
+    config = CalibrationConfig(
+        camera=0,
+        output_path="configs/zones.yaml",
+        zone_prefix="zone",
+        window_width=1024,
+        window_height=600,
+        panel_width=224,
+        fullscreen=False,
+    )
+
+    assert config.detect is True
+    assert config.config_path == "configs/app.example.yaml"
+    assert config.yolo_model == "yolo11s.pt"

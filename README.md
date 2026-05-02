@@ -73,6 +73,12 @@ Quick controller smoke test:
 ./scripts/smoke_test.sh --port /dev/ttyACM1 --dry-fire
 ```
 
+Keyboard teleop over an SSH session to the Jetson:
+
+```bash
+./scripts/run_teleop.sh --port /dev/ttyACM1
+```
+
 YOLO11 detection overlay on the primary camera:
 
 ```bash
@@ -126,6 +132,42 @@ By default the runtime starts disarmed. In the window:
 - `d` disarms the system
 - `q` quits
 
+## Tracking Test UI
+
+Two-camera tracking test screen with live overlays and teleop controls:
+
+```bash
+./scripts/run_tracking_test.sh --fixed-camera /dev/fixed_cam --turret-camera /dev/turret_cam
+```
+
+For live RP2040 control, keep the UI disarmed until the camera view and zone overlay look right:
+
+```bash
+./scripts/run_tracking_test.sh \
+  --fixed-camera /dev/fixed_cam \
+  --turret-camera /dev/turret_cam \
+  --port /dev/ttyACM1 \
+  --live-controller
+```
+
+Controls are available as on-screen buttons and keyboard shortcuts:
+
+- `z`: switch to zone calibration
+- `e`: arm
+- `x`: disarm and safe stop
+- `w/a/s/d`: tilt/pan
+- `space`: fire once when armed
+- `p`: poll controller status
+- `q`: quit
+
+From an SSH session with X forwarding:
+
+```bash
+ssh -Y mdev@192.168.55.1
+cd ~/cat_cannon
+./scripts/run_tracking_test_x11.sh --live-controller --port /dev/ttyACM1
+```
+
 ## Zone Calibration
 
 Touchscreen-friendly zone calibration on a `1024x600` display:
@@ -139,6 +181,7 @@ How it works:
 - tap four corners to create each four-sided zone
 - tap `Save Zones` when the polygons look correct
 - use the on-screen buttons or hotkeys to undo, clear pending points, or delete the last zone
+- tap `Tracking Test` or press `t` to switch to the tracking test screen
 
 You can run the same calibrator from the laptop bench setup:
 

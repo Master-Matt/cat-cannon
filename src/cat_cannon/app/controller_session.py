@@ -33,11 +33,17 @@ class ControllerSession:
             self._thread = None
         try:
             self.controller.safe_stop()
+        except Exception:
+            pass
         finally:
             self.controller.close()
 
     def _heartbeat_loop(self) -> None:
         while not self._stop_event.is_set():
-            self.controller.heartbeat()
+            try:
+                self.controller.heartbeat()
+            except Exception:
+                if self._stop_event.is_set():
+                    break
             self._stop_event.wait(self.heartbeat_interval_s)
 
