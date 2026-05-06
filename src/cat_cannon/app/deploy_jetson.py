@@ -241,6 +241,18 @@ def build_jetson_gpu_setup_command(config: JetsonDeployConfig) -> str:
     return " && ".join(commands)
 
 
+def build_udev_install_command(config: JetsonDeployConfig) -> str:
+    """Build command to install udev rules for persistent camera symlinks."""
+    rules_src = f"{config.remote_dir}/systemd/99-cat-cannon-cameras.rules"
+    rules_dst = "/etc/udev/rules.d/99-cat-cannon-cameras.rules"
+    commands = [
+        _sudo_shell(config, f"cp {shlex.quote(rules_src)} {rules_dst}"),
+        _sudo_shell(config, "udevadm control --reload-rules"),
+        _sudo_shell(config, "udevadm trigger"),
+    ]
+    return " && ".join(commands)
+
+
 def build_bootstrap_command(config: JetsonDeployConfig) -> str:
     extras_suffix = f"[{','.join(config.extras)}]" if config.extras else ""
     remote_dir = shlex.quote(config.remote_dir)
@@ -312,6 +324,12 @@ def build_deploy_steps(
         control_path=control_path,
         remote_command=gpu_setup_command,
     )
+    udev_command = build_udev_install_command(config)
+    remote_udev = build_ssh_command(
+        config,
+        control_path=control_path,
+        remote_command=udev_command,
+    )
     close_command = build_ssh_command(
         config,
         control_path=control_path,
@@ -324,6 +342,7 @@ def build_deploy_steps(
         DeployStep(name="rsync", command=sync_command),
         DeployStep(name="remote-bootstrap", command=remote_bootstrap),
         DeployStep(name="jetson-gpu-setup", command=remote_gpu_setup),
+        DeployStep(name="udev-install", command=remote_udev),
     ]
     return steps, close_command
 

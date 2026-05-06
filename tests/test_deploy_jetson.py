@@ -147,10 +147,11 @@ def test_build_deploy_steps_returns_named_phases() -> None:
     steps, close_command = build_deploy_steps(config, control_path="/tmp/cat-cannon-test/control")
 
     assert [step.name for step in steps] == [
-        "ssh-bootstrap", "rsync", "remote-bootstrap", "jetson-gpu-setup",
+        "ssh-bootstrap", "rsync", "remote-bootstrap", "jetson-gpu-setup", "udev-install",
     ]
     assert steps[0].command[0] == "ssh"
     assert steps[1].command[0] == "rsync"
     assert steps[2].command[0] == "ssh"
     assert steps[3].command[0] == "ssh"
+    assert steps[4].command[0] == "ssh"
     assert close_command[-4:] == ["-O", "exit", f"mdev@{DEFAULT_HOST}", "true"]

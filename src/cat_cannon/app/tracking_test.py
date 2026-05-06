@@ -35,6 +35,7 @@ class SessionLike(Protocol):
 class TrackingTestConfig:
     fixed_camera: int | str = "/dev/fixed_cam"
     turret_camera: int | str | None = "/dev/turret_cam"
+    turret_rotate_180: bool = True
     port: str | None = None
     baudrate: int = 115200
     fire_ms: int = 120
@@ -354,6 +355,11 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     parser.add_argument("--window-height", type=int, default=720)
     parser.add_argument("--panel-width", type=int, default=280)
     parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument(
+        "--no-turret-rotate",
+        action="store_true",
+        help="Disable 180° rotation of the turret camera",
+    )
     args = parser.parse_args(argv)
 
     def _parse_camera(value: str) -> int | str:
@@ -370,6 +376,7 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     return TrackingTestConfig(
         fixed_camera=_parse_camera(args.fixed_camera),
         turret_camera=turret_parsed,
+        turret_rotate_180=not args.no_turret_rotate,
         port=args.port,
         baudrate=args.baudrate,
         fire_ms=args.fire_ms,
@@ -389,9 +396,9 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     )
 
 
-def _open_camera(cv2, device: int | str):
+def _open_camera(cv2, device: int | str, *, rotate_180: bool = False):
     from cat_cannon.adapters.camera import open_camera
-    return open_camera(cv2, device)
+    return open_camera(cv2, device, rotate_180=rotate_180)
 
 
 def _resolve_port(port: str | None) -> str:
@@ -771,7 +778,9 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
     supervisor = SupervisorLoop(config=system_config, zones=zones, controller=controller)
     fixed_camera = _open_camera(cv2, config.fixed_camera)
     turret_camera = (
-        _open_camera(cv2, config.turret_camera) if config.turret_camera is not None else None
+        _open_camera(cv2, config.turret_camera, rotate_180=config.turret_rotate_180)
+        if config.turret_camera is not None
+        else None
     )
 
     state = TrackingTestState(armed=config.arm_on_start, step_deg=config.step_deg)

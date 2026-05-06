@@ -93,9 +93,9 @@ def parse_args() -> RuntimeConfig:
     )
 
 
-def _open_camera(cv2, device: int | str):
+def _open_camera(cv2, device: int | str, *, rotate_180: bool = False):
     from cat_cannon.adapters.camera import open_camera
-    return open_camera(cv2, device)
+    return open_camera(cv2, device, rotate_180=rotate_180)
 
 
 def _resolve_port(port: str | None) -> str:
