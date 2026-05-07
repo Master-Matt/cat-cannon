@@ -16,6 +16,10 @@ class NullTurretController(TurretController):
         self.pan_commands.append(pan_delta)
         self.tilt_commands.append(tilt_delta)
 
+    def set_velocity(self, pan_deg_s: float, tilt_deg_s: float) -> None:
+        self.pan_commands.append(pan_deg_s)
+        self.tilt_commands.append(tilt_deg_s)
+
     def fire(self) -> None:
         self.fired += 1
 

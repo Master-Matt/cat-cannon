@@ -32,7 +32,7 @@ def test_build_bootstrap_command_installs_repo_with_extras() -> None:
     assert "mkdir -p /home/mdev/cat_cannon" in command
     assert "cd /home/mdev/cat_cannon" in command
     assert "python3 -m venv .venv" in command
-    assert ".venv/bin/python -m pip install -e '.[dev,vision]'" in command
+    assert ".venv/bin/python -m pip install -e '.[dev]'" in command
 
 
 def test_parse_args_installs_bench_extra_by_default_for_opencv_uis() -> None:
@@ -147,11 +147,13 @@ def test_build_deploy_steps_returns_named_phases() -> None:
     steps, close_command = build_deploy_steps(config, control_path="/tmp/cat-cannon-test/control")
 
     assert [step.name for step in steps] == [
-        "ssh-bootstrap", "rsync", "remote-bootstrap", "jetson-gpu-setup", "udev-install",
+        "ssh-bootstrap", "rsync", "seed-configs", "remote-bootstrap", "jetson-gpu-setup", "udev-install", "desktop-shortcut",
     ]
     assert steps[0].command[0] == "ssh"
     assert steps[1].command[0] == "rsync"
     assert steps[2].command[0] == "ssh"
     assert steps[3].command[0] == "ssh"
     assert steps[4].command[0] == "ssh"
+    assert steps[5].command[0] == "ssh"
+    assert steps[6].command[0] == "ssh"
     assert close_command[-4:] == ["-O", "exit", f"mdev@{DEFAULT_HOST}", "true"]

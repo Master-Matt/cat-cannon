@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Cat Cannon
+Comment=Cat Cannon turret control system
+Exec=/home/mdev/cat_cannon/scripts/run_app.sh
+Path=/home/mdev/cat_cannon
+Terminal=false
+Type=Application
+Icon=camera-video
+Categories=Utility;
+StartupNotify=true

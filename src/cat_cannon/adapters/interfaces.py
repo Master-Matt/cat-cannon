@@ -23,6 +23,9 @@ class TurretController(Protocol):
     def apply_tracking_delta(self, pan_delta: float, tilt_delta: float) -> None:
         """Apply bounded movement commands to the turret."""
 
+    def set_velocity(self, pan_deg_s: float, tilt_deg_s: float) -> None:
+        """Set continuous servo velocity in degrees/sec."""
+
     def fire(self) -> None:
         """Trigger one bounded actuation pulse."""
 

@@ -13,6 +13,8 @@ class TrackingCalibration:
     vertical_gain: float
     aim_offset_x_px: float
     aim_offset_y_px: float
+    servo_center_pan_deg: float = 0.0
+    servo_center_tilt_deg: float = 0.0
 
 
 @dataclass(frozen=True)

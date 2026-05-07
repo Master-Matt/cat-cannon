@@ -10,10 +10,19 @@ detection:
   consecutive_counter_frames: 3
 
 tracking:
-  horizontal_deadband_px: 40
-  vertical_deadband_px: 30
+  horizontal_deadband_px: 10
+  vertical_deadband_px: 10
   horizontal_gain: 0.03
   vertical_gain: 0.03
   aim_offset_x_px: 0
   aim_offset_y_px: 20
+  servo_center_pan_deg: 0
+  servo_center_tilt_deg: 0
+
+tracking_tuning:
+  ema_alpha: 0.35
+  gain: 0.5
+  pan_clamp_deg: 3.0
+  deadband_deg: 0.3
+  frame_wait_ms: 10
 

@@ -160,6 +160,7 @@ class UltralyticsYoloDetector:
             "source": frame,
             "verbose": False,
             "imgsz": self._runtime.imgsz,
+            "workers": 0,
         }
         # TensorRT engines manage their own device; only pass device for .pt/.onnx
         model_path = self._runtime.resolved_model_path()

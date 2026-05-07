@@ -30,18 +30,22 @@ control and updates.
 
 ## Jetson Update Flow
 
-1. Connect the host to the Jetson over OTG or LAN.
+1. Connect the host to the Jetson over USB OTG or LAN.
 2. Run:
 
 ```bash
+# Via USB OTG (fixed IP):
 JETSON_PASSWORD=nvidia ./scripts/deploy_jetson.sh --host 192.168.55.1 --user mdev
+
+# Via LAN (find the Jetson IP on your network):
+JETSON_PASSWORD=nvidia ./scripts/deploy_jetson.sh --host <JETSON_LAN_IP> --user mdev
 ```
 
 3. If you want the bundled systemd unit installed or restarted:
 
 ```bash
 JETSON_PASSWORD=nvidia ./scripts/deploy_jetson.sh \
-  --host 192.168.55.1 \
+  --host <JETSON_IP> \
   --user mdev \
   --remote-dir /opt/cat-cannon \
   --install-service \
@@ -98,6 +102,7 @@ teleop buttons for arm, safe stop, pan/tilt, and fire.
 From the laptop:
 
 ```bash
+# 192.168.55.1 = USB OTG; use LAN IP if connected via network
 ssh -Y mdev@192.168.55.1
 cd ~/cat_cannon
 ./scripts/run_tracking_test_x11.sh --live-controller --port /dev/ttyACM1

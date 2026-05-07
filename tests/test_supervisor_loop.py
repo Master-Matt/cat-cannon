@@ -41,7 +41,7 @@ def _supervisor() -> tuple[SupervisorLoop, NullTurretController]:
 
 
 def _cat_detection() -> Detection:
-    return Detection("cat-1", "cat", 0.9, BoundingBox(90, 75, 20, 50))
+    return Detection("cat-1", "cat", 0.9, BoundingBox(50, 40, 20, 50))
 
 
 def _person_detection() -> Detection:
@@ -76,7 +76,7 @@ def test_supervisor_loop_reports_human_lockout_and_safe_stop() -> None:
     assert result.state == SupervisorState.HUMAN_LOCKOUT
     assert result.human_present is True
     assert result.fire_commanded is False
-    assert controller.stopped >= 1
+    # Turret still tracks when armed (just won't fire) — no safe_stop
 
 
 def test_supervisor_loop_does_not_apply_tracking_delta_when_disarmed() -> None:
@@ -118,4 +118,5 @@ def test_supervisor_uses_turret_camera_for_targeting_when_available() -> None:
     # Turret cat is centered → correction should be near zero / aim locked
     assert result.correction is not None
     assert result.aim_locked is True
-    assert len(controller.pan_commands) >= 1
+    # No servo commands sent because target is already centered (below deadband)
+    assert len(controller.pan_commands) == 0

@@ -96,10 +96,14 @@ If the Pico is in `BOOTSEL` mode, flash MicroPython first:
 
 Keyboard controls are shown in the bench window and documented in `docs/laptop-bench.md`.
 
-Jetson OTG deploy example:
+Deploy to Jetson:
 
 ```bash
+# Via USB OTG (fixed IP):
 JETSON_PASSWORD=nvidia ./scripts/deploy_jetson.sh --host 192.168.55.1 --user mdev
+
+# Via LAN (find the Jetson's IP on your network):
+JETSON_PASSWORD=nvidia ./scripts/deploy_jetson.sh --host <JETSON_LAN_IP> --user mdev
 ```
 
 If the Jetson image is already provisioned and APT is offline or misconfigured:
@@ -163,6 +167,7 @@ Controls are available as on-screen buttons and keyboard shortcuts:
 From an SSH session with X forwarding:
 
 ```bash
+# 192.168.55.1 = USB OTG; use LAN IP if connected via network
 ssh -Y mdev@192.168.55.1
 cd ~/cat_cannon
 ./scripts/run_tracking_test_x11.sh --live-controller --port /dev/ttyACM1

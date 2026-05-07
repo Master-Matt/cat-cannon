@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_HOST = "192.168.55.1"
+DEFAULT_HOST = "192.168.0.218"
 DEFAULT_USER = "mdev"
 DEFAULT_SERVICE_NAME = "cat-cannon"
 
@@ -135,6 +135,9 @@ def build_rsync_command(
         "*.pyc",
         "*.engine",
         "everything-claude-code/",
+        # Preserve user-edited configs on the remote
+        "configs/zones.yaml",
+        "configs/app.yaml",
     ]
     command = [
         *_ssh_prefix(config),
@@ -160,70 +163,27 @@ _NV_TORCH_WHEEL = (
     "torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl"
 )
 
-_TORCHVISION_PATCH = r"""
-import sys, pathlib
-site = pathlib.Path(sys.argv[1])
 
-# 1. _meta_registrations.py — disable torch dispatch registration
-(site / "torchvision" / "_meta_registrations.py").write_text("# disabled for Jetson TRT compat\n")
+def _without_vision(extras_suffix: str) -> str:
+    """Remove the 'vision' extra from an extras suffix like '[dev,bench,vision]'.
 
-# 2. extension.py — make _assert_has_ops() a no-op
-ext = site / "torchvision" / "extension.py"
-txt = ext.read_text()
-txt = txt.replace(
-    "def _assert_has_ops():\n    if not _has_ops():",
-    "def _assert_has_ops():\n    return\n    if not _has_ops():",
-)
-ext.write_text(txt)
-
-# 3. ops/boxes.py — pure-torch NMS fallback when C++ ops unavailable
-boxes = site / "torchvision" / "ops" / "boxes.py"
-txt = boxes.read_text()
-old = "    _assert_has_ops()\n    return torch.ops.torchvision.nms(boxes, scores, iou_threshold)"
-new = '''    from torchvision.extension import _has_ops
-    if _has_ops():
-        return torch.ops.torchvision.nms(boxes, scores, iou_threshold)
-    # Pure-torch NMS fallback for Jetson (incompatible C++ ops)
-    order = scores.argsort(descending=True)
-    keep = []
-    while order.numel() > 0:
-        i = order[0].item()
-        keep.append(i)
-        if order.numel() == 1:
-            break
-        rest = order[1:]
-        xx1 = torch.max(boxes[i, 0], boxes[rest, 0])
-        yy1 = torch.max(boxes[i, 1], boxes[rest, 1])
-        xx2 = torch.min(boxes[i, 2], boxes[rest, 2])
-        yy2 = torch.min(boxes[i, 3], boxes[rest, 3])
-        inter = (xx2 - xx1).clamp(min=0) * (yy2 - yy1).clamp(min=0)
-        area_i = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
-        area_rest = (boxes[rest, 2] - boxes[rest, 0]) * (boxes[rest, 3] - boxes[rest, 1])
-        iou = inter / (area_i + area_rest - inter)
-        mask = iou <= iou_threshold
-        order = rest[mask]
-    return torch.tensor(keep, dtype=torch.long, device=boxes.device)'''
-txt = txt.replace(old, new)
-boxes.write_text(txt)
-
-# 4. Symlink system TensorRT into venv
-trt_src = pathlib.Path("/usr/lib/python3.10/dist-packages")
-for name in ("tensorrt", "tensorrt_lean", "tensorrt_dispatch"):
-    for suffix in ("", "-10.3.0.dist-info"):
-        src = trt_src / f"{name}{suffix}"
-        dst = site / f"{name}{suffix}"
-        if src.exists() and not dst.exists():
-            dst.symlink_to(src)
-
-print("Jetson GPU patches applied")
-"""
+    The vision extra pulls ultralytics→torch→torchvision which conflicts
+    with the NVIDIA torch wheel.  We install those in jetson-gpu-setup instead.
+    """
+    if not extras_suffix:
+        return ""
+    inner = extras_suffix.strip("[]")
+    parts = [p.strip() for p in inner.split(",") if p.strip().lower() != "vision"]
+    if not parts:
+        return ""
+    return f"[{','.join(parts)}]"
 
 
 def build_jetson_gpu_setup_command(config: JetsonDeployConfig) -> str:
     """Build command to install NVIDIA torch stack and patch torchvision for Jetson."""
     remote_dir = shlex.quote(config.remote_dir)
     site_packages = f"{config.remote_dir}/.venv/lib/python3.10/site-packages"
-    patch_script = f"{config.remote_dir}/.venv/_patch_torchvision.py"
+    patch_script = f"{config.remote_dir}/scripts/patch_torchvision_jetson.py"
     commands = [
         f"cd {remote_dir}",
         # Install NVIDIA torch wheel (replaces PyPI torch)
@@ -232,10 +192,13 @@ def build_jetson_gpu_setup_command(config: JetsonDeployConfig) -> str:
         ".venv/bin/pip install --no-cache 'numpy<2'",
         # Install torchvision 0.19.0 without deps (ABI-compat with NV torch 2.5)
         ".venv/bin/pip install --no-cache --no-deps 'torchvision==0.19.0'",
+        # Install ultralytics without deps (avoids torch resolution from PyPI)
+        ".venv/bin/pip install --no-cache --no-deps 'ultralytics>=8.4'",
+        # Install ultralytics' non-torch runtime deps
+        ".venv/bin/pip install --no-cache matplotlib pillow requests scipy psutil polars ultralytics-thop",
         # Install onnx for engine export
         ".venv/bin/pip install --no-cache onnx onnxslim",
-        # Write and run the torchvision patch script
-        f"cat > {shlex.quote(patch_script)} << 'JETSON_PATCH_EOF'\n{_TORCHVISION_PATCH}JETSON_PATCH_EOF",
+        # Run the torchvision patch script (rsynced from repo)
         f".venv/bin/python {shlex.quote(patch_script)} {shlex.quote(site_packages)}",
     ]
     return " && ".join(commands)
@@ -275,7 +238,9 @@ def build_bootstrap_command(config: JetsonDeployConfig) -> str:
             f"cd {remote_dir}",
             "python3 -m venv .venv",
             ".venv/bin/python -m pip install --upgrade pip",
-            f".venv/bin/python -m pip install -e '.{extras_suffix}'",
+            # Install WITHOUT 'vision' extra — torch/torchvision are handled
+            # by jetson-gpu-setup to avoid pip pulling incompatible PyPI wheels.
+            f".venv/bin/python -m pip install -e '.{_without_vision(extras_suffix)}'",
         ]
     )
     if config.install_service:
@@ -330,6 +295,31 @@ def build_deploy_steps(
         control_path=control_path,
         remote_command=udev_command,
     )
+    # Seed config files from examples if they don't already exist on the remote
+    seed_configs_cmd = (
+        f"cd {shlex.quote(config.remote_dir)} && "
+        "cp -n configs/app.example.yaml configs/app.yaml 2>/dev/null; "
+        "cp -n configs/zones.example.yaml configs/zones.yaml 2>/dev/null; "
+        "true"
+    )
+    remote_seed_configs = build_ssh_command(
+        config,
+        control_path=control_path,
+        remote_command=seed_configs_cmd,
+    )
+    # Install desktop shortcut
+    desktop_cmd = (
+        f"mkdir -p /home/{config.user}/Desktop && "
+        f"cp {shlex.quote(config.remote_dir)}/systemd/cat-cannon.desktop "
+        f"/home/{config.user}/Desktop/cat-cannon.desktop && "
+        f"chmod +x /home/{config.user}/Desktop/cat-cannon.desktop && "
+        f"gio set /home/{config.user}/Desktop/cat-cannon.desktop metadata::trusted true 2>/dev/null; true"
+    )
+    remote_desktop = build_ssh_command(
+        config,
+        control_path=control_path,
+        remote_command=desktop_cmd,
+    )
     close_command = build_ssh_command(
         config,
         control_path=control_path,
@@ -340,9 +330,11 @@ def build_deploy_steps(
     steps = [
         DeployStep(name="ssh-bootstrap", command=bootstrap_connect),
         DeployStep(name="rsync", command=sync_command),
+        DeployStep(name="seed-configs", command=remote_seed_configs),
         DeployStep(name="remote-bootstrap", command=remote_bootstrap),
         DeployStep(name="jetson-gpu-setup", command=remote_gpu_setup),
         DeployStep(name="udev-install", command=remote_udev),
+        DeployStep(name="desktop-shortcut", command=remote_desktop),
     ]
     return steps, close_command
 

@@ -14,6 +14,7 @@ class Servo:
         self._min_deg = min_deg
         self._max_deg = max_deg
         self.angle_deg = home_deg
+        self._attached = False
         self.write(home_deg)
 
     def write(self, angle_deg):
@@ -21,9 +22,19 @@ class Servo:
         self.angle_deg = clamped
         duty = self._angle_to_duty_u16(clamped)
         self._pwm.duty_u16(duty)
+        self._attached = True
 
     def delta(self, amount_deg):
         self.write(self.angle_deg + amount_deg)
+
+    def detach(self):
+        """Stop PWM signal to eliminate servo buzz."""
+        self._pwm.duty_u16(0)
+        self._attached = False
+
+    @property
+    def attached(self):
+        return self._attached
 
     def _angle_to_duty_u16(self, angle_deg):
         span_deg = self._max_deg - self._min_deg or 1.0
@@ -45,10 +56,18 @@ class Controller:
         self.led = Pin(cfg.STATUS_LED_PIN, Pin.OUT)
         self.enabled = False
         self.last_contact_ms = time.ticks_ms()
+        self.last_move_ms = time.ticks_ms()
         self.fire_until_ms = None
+        # Velocity mode: degrees per second for continuous smooth motion
+        self.pan_vel = 0.0
+        self.tilt_vel = 0.0
+        self._last_tick_ms = time.ticks_ms()
 
     def tick(self):
         now = time.ticks_ms()
+        dt_ms = time.ticks_diff(now, self._last_tick_ms)
+        self._last_tick_ms = now
+
         if self.fire_until_ms is not None and time.ticks_diff(self.fire_until_ms, now) <= 0:
             self.solenoid.value(0)
             self.fire_until_ms = None
@@ -58,6 +77,21 @@ class Controller:
             self.solenoid.value(0)
             self.fire_until_ms = None
             self.led.value(0)
+            self.pan_vel = 0.0
+            self.tilt_vel = 0.0
+
+        # Apply velocity: continuous servo interpolation at tick rate (~50Hz)
+        if abs(self.pan_vel) > 0.1 or abs(self.tilt_vel) > 0.1:
+            dt_s = dt_ms / 1000.0
+            self.pan.delta(self.pan_vel * dt_s)
+            self.tilt.delta(self.tilt_vel * dt_s)
+            self.last_move_ms = now
+
+        # Auto-relax servos after idle period to stop buzzing
+        if (self.pan.attached or self.tilt.attached) and \
+           time.ticks_diff(now, self.last_move_ms) > cfg.SERVO_IDLE_RELAX_MS:
+            self.pan.detach()
+            self.tilt.detach()
 
     def handle(self, message):
         self.last_contact_ms = time.ticks_ms()
@@ -82,12 +116,27 @@ class Controller:
             if command == "set_angles":
                 self.pan.write(float(payload["pan_deg"]))
                 self.tilt.write(float(payload["tilt_deg"]))
+                self.last_move_ms = time.ticks_ms()
                 return self._ok(seq, "angles_set", self._status_payload())
             if command == "apply_delta":
                 self.pan.delta(float(payload.get("pan_delta_deg", 0.0)))
                 self.tilt.delta(float(payload.get("tilt_delta_deg", 0.0)))
+                self.last_move_ms = time.ticks_ms()
                 return self._ok(seq, "delta_applied", self._status_payload())
+            if command == "set_velocity":
+                self.pan_vel = float(payload.get("pan_deg_s", 0.0))
+                self.tilt_vel = float(payload.get("tilt_deg_s", 0.0))
+                self.last_move_ms = time.ticks_ms()
+                return self._ok(seq, "velocity_set", self._status_payload())
+            if command == "relax":
+                self.pan_vel = 0.0
+                self.tilt_vel = 0.0
+                self.pan.detach()
+                self.tilt.detach()
+                return self._ok(seq, "relaxed", self._status_payload())
             if command == "safe_stop":
+                self.pan_vel = 0.0
+                self.tilt_vel = 0.0
                 self.solenoid.value(0)
                 self.fire_until_ms = None
                 return self._ok(seq, "safe_stop", self._status_payload())
@@ -140,7 +189,20 @@ def main():
         if not events:
             continue
 
-        line = sys.stdin.readline()
+        # Drain all buffered lines, only process the latest one.
+        # This prevents command queue buildup when the host sends
+        # faster than we process (e.g. 30Hz tracking commands).
+        line = None
+        while True:
+            l = sys.stdin.readline()
+            if not l:
+                break
+            line = l
+            # Check if more data is ready without blocking
+            more = poller.poll(0)
+            if not more:
+                break
+
         if not line:
             continue
 

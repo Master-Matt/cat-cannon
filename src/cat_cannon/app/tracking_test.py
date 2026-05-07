@@ -20,7 +20,7 @@ from cat_cannon.config import load_counter_zones, load_system_config
 from cat_cannon.domain.models import CounterZone, Detection
 from cat_cannon.domain.safety import DetectionPolicy
 
-ScreenName = Literal["zone_calibration", "tracking_test"]
+ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 
 
 class SessionLike(Protocol):
@@ -40,12 +40,12 @@ class TrackingTestConfig:
     baudrate: int = 115200
     fire_ms: int = 120
     step_deg: float = 3.0
-    config_path: str = "configs/app.example.yaml"
+    config_path: str = "configs/app.yaml"
     zones_path: str = "configs/zones.yaml"
     yolo_model: str = "yolo11s.pt"
     yolo_device: str | None = None
     yolo_imgsz: int = 640
-    detect_interval: int = 3
+    detect_interval: int = 5
     live_controller: bool = False
     arm_on_start: bool = False
     window_width: int = 1280
@@ -58,6 +58,7 @@ class TrackingTestConfig:
 class TrackingTestState:
     armed: bool
     step_deg: float
+    track_humans: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,18 @@ def resolve_zones_path(path: str | Path) -> Path:
         return candidate
     if candidate.name == "zones.yaml":
         fallback = candidate.with_name("zones.example.yaml")
+        if fallback.exists():
+            return fallback
+    return candidate
+
+
+def _resolve_config_path(path: str | Path) -> Path:
+    """Resolve app config path, falling back to example if runtime copy doesn't exist."""
+    candidate = Path(path)
+    if candidate.exists():
+        return candidate
+    if candidate.name == "app.yaml":
+        fallback = candidate.with_name("app.example.yaml")
         if fallback.exists():
             return fallback
     return candidate
@@ -251,6 +264,7 @@ def handle_tracking_control(
     state: TrackingTestState,
     session: SessionLike | None,
     controller: TurretController,
+    config_path: str | None = None,
 ) -> TrackingControlResult:
     if control == "quit":
         return TrackingControlResult(state=state, message="quit requested", should_exit=True)
@@ -306,6 +320,31 @@ def handle_tracking_control(
     if control == "fire":
         controller.fire()
         return TrackingControlResult(state=state, message="fired")
+
+    if control == "set_center":
+        status_method = getattr(controller, "status", None)
+        if status_method is None:
+            return TrackingControlResult(state=state, message="set_center unavailable in dry-run")
+        response = status_method()
+        payload = getattr(response, "payload", {})
+        pan = float(payload.get("pan_deg", 0))
+        tilt = float(payload.get("tilt_deg", 0))
+        if config_path:
+            from cat_cannon.config import save_servo_center
+            save_servo_center(config_path, pan, tilt)
+        return TrackingControlResult(
+            state=state,
+            message=f"center saved: pan={pan:.1f} tilt={tilt:.1f}",
+        )
+
+    if control == "track_human":
+        new_state = TrackingTestState(
+            armed=state.armed,
+            step_deg=state.step_deg,
+            track_humans=not state.track_humans,
+        )
+        mode = "human" if new_state.track_humans else "cat"
+        return TrackingControlResult(state=new_state, message=f"tracking: {mode}")
 
     return TrackingControlResult(state=state, message="")
 
@@ -457,7 +496,9 @@ def _build_buttons(config: TrackingTestConfig) -> list[UiButton]:
         full("tilt_down", "Tilt Down", 4),
         half("fire", "Fire", 5, 0),
         half("safe_stop", "Safe Stop", 5, 1),
-        full("quit", "Quit", 6),
+        half("set_center", "Set Center", 6, 0),
+        half("track_human", "Track Human", 6, 1),
+        full("quit", "Quit", 7),
     ]
 
 
@@ -473,6 +514,8 @@ def _control_from_key(key: int) -> str | None:
         ord("d"): "pan_right",
         ord(" "): "fire",
         ord("p"): "status",
+        ord("c"): "set_center",
+        ord("h"): "track_human",
     }
     return keymap.get(key)
 
@@ -589,8 +632,9 @@ def _status_lines(
             f"pan={step_result.correction.pan_delta:.2f} "
             f"tilt={step_result.correction.tilt_delta:.2f}"
         )
+    tracking_mode = "human" if state.track_humans else "cat"
     return [
-        f"mode={'live' if live_controller else 'dry-run'} armed={state.armed}",
+        f"mode={'live' if live_controller else 'dry-run'} armed={state.armed} track={tracking_mode}",
         f"state={step_result.state.value} zone={zone} target={target}",
         f"locked={step_result.aim_locked} fire={step_result.fire_commanded}",
         correction,
@@ -753,7 +797,8 @@ def _render_ui(
 
 def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
     cv2 = _require_cv2()
-    system_config = load_system_config(config.config_path)
+    resolved_config_path = _resolve_config_path(config.config_path)
+    system_config = load_system_config(resolved_config_path)
     zones_path, zones, status_message = _load_zones(config.zones_path)
     detector = UltralyticsYoloDetector.open(
         policy=system_config.detection_policy,
@@ -799,6 +844,7 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 state=state,
                 session=session,
                 controller=controller,
+                config_path=str(resolved_config_path),
             )
         except RP2040ProtocolError as exc:
             status_message = f"controller error: {exc}"
@@ -858,13 +904,47 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                         f"Failed to read from turret camera {config.turret_camera}"
                     )
 
-            if camera_detections is None or frame_counter % config.detect_interval == 0:
-                camera_detections = detect_tracking_cameras(
-                    detector=detector,
-                    fixed_frame=fixed_frame,
-                    turret_frame=turret_frame,
-                    policy=system_config.detection_policy,
+            # Always compute active policy (may change on user toggle)
+            active_policy = system_config.detection_policy
+            if state.track_humans:
+                active_policy = DetectionPolicy(
+                    cat_class=active_policy.person_class,
+                    person_class="__disabled__",
+                    cat_confidence_threshold=active_policy.person_confidence_threshold,
+                    person_confidence_threshold=active_policy.person_confidence_threshold,
+                    consecutive_counter_frames=active_policy.consecutive_counter_frames,
                 )
+
+            # Fixed camera: detect at interval (zone confirmation only)
+            if camera_detections is None or frame_counter % config.detect_interval == 0:
+                fixed_perception = detector.detect(fixed_frame, source_id="fixed")
+            else:
+                fixed_perception = camera_detections.fixed
+
+            # Turret camera: detect EVERY frame for responsive tracking
+            if turret_frame is not None:
+                turret_perception_frame = detector.detect(turret_frame, source_id="turret")
+            else:
+                turret_perception_frame = None
+
+            camera_detections = TrackingCameraDetections(
+                fixed=fixed_perception,
+                fixed_summary=_source_detection_summary(
+                    source_id="fixed",
+                    detections=fixed_perception.detections,
+                    policy=active_policy,
+                ),
+                turret=turret_perception_frame,
+                turret_summary=(
+                    _source_detection_summary(
+                        source_id="turret",
+                        detections=turret_perception_frame.detections,
+                        policy=active_policy,
+                    )
+                    if turret_perception_frame is not None
+                    else "turret unavailable"
+                ),
+            )
             frame_counter += 1
             perception_frame = camera_detections.fixed
             turret_perception = camera_detections.turret
@@ -882,6 +962,7 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 turret_frame_height=(
                     turret_perception.height if turret_perception is not None else None
                 ),
+                detection_policy_override=active_policy if state.track_humans else None,
             )
             layout = build_tracking_layout(
                 fixed_frame_width=fixed_frame.shape[1],
@@ -914,7 +995,7 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
             )
             cv2.imshow(window_name, canvas)
 
-            key = cv2.waitKey(16) & 0xFF
+            key = cv2.waitKey(system_config.tracking_tuning.frame_wait_ms) & 0xFF
             if key != 255:
                 control = _control_from_key(key)
                 if control is not None:
@@ -940,6 +1021,29 @@ def run_tracking_test_with_navigation(config: TrackingTestConfig) -> None:
     while current is not None:
         if current == "tracking_test":
             current = run_tracking_test_screen(config)
+            continue
+
+        if current == "eye":
+            from cat_cannon.app.eye_screen import EyeConfig, run_eye_screen
+
+            current = run_eye_screen(
+                EyeConfig(
+                    fixed_camera=config.fixed_camera,
+                    turret_camera=config.turret_camera,
+                    turret_rotate_180=config.turret_rotate_180,
+                    port=config.port,
+                    baudrate=config.baudrate,
+                    config_path=config.config_path,
+                    zones_path=config.zones_path,
+                    yolo_model=config.yolo_model,
+                    yolo_device=config.yolo_device,
+                    yolo_imgsz=config.yolo_imgsz,
+                    window_width=config.window_width,
+                    window_height=config.window_height,
+                    fullscreen=config.fullscreen,
+                    live_controller=config.live_controller,
+                )
+            )
             continue
 
         from cat_cannon.app.calibrate_zones import CalibrationConfig, run_calibration_screen

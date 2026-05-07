@@ -16,6 +16,12 @@ TILT_HOME_DEG = 90.0
 SERVO_MIN_US = 500
 SERVO_MAX_US = 2500
 
+# Max servo speed: degrees per second (60 deg in 0.2s = 300 deg/s)
+SERVO_MAX_SPEED_DEG_S = 300.0
+
 WATCHDOG_TIMEOUT_MS = 1500
 DEFAULT_FIRE_DURATION_MS = 300
 MAX_FIRE_DURATION_MS = 1000
+
+# Servo idle relax: stop PWM after this many ms without movement to prevent buzzing
+SERVO_IDLE_RELAX_MS = 2000

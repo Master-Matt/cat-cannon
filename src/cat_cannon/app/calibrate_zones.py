@@ -14,7 +14,7 @@ from cat_cannon.app.zone_calibration import CalibrationLayout, ZoneCalibrationSe
 from cat_cannon.config import load_counter_zones, load_system_config, save_counter_zones
 from cat_cannon.domain.models import CounterZone, Detection
 
-ScreenName = Literal["zone_calibration", "tracking_test"]
+ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 
 
 def _require_cv2():
@@ -136,6 +136,7 @@ def _build_buttons(config: CalibrationConfig) -> list[UiButton]:
     spacing = 12
     labels = [
         ("tracking", "Tracking Test"),
+        ("eye", "Eye Screen"),
         ("save", "Save Zones"),
         ("undo", "Undo"),
         ("clear", "Clear Pending"),
@@ -333,7 +334,7 @@ def _render_ui(
     )
     cv2.putText(
         canvas,
-        "Hotkeys: t tracking  s save  u undo  x clear  r remove  q quit",
+        "Hotkeys: t tracking  e eye  s save  u undo  x clear  r remove  q quit",
         (layout.panel_x + 16, layout.window_height - 54),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -409,6 +410,9 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
             if button.contains(x, y):
                 if button.key == "tracking":
                     next_screen = "tracking_test"
+                    should_exit = True
+                elif button.key == "eye":
+                    next_screen = "eye"
                     should_exit = True
                 elif button.key == "save":
                     save_counter_zones(output_path, session.zones)
@@ -493,7 +497,7 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
             )
             cv2.imshow(window_name, canvas)
 
-            key = cv2.waitKey(16) & 0xFF
+            key = cv2.waitKey(system_config.tracking_tuning.frame_wait_ms) & 0xFF
             if should_exit:
                 break
             if key == 255:
@@ -502,6 +506,9 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
                 break
             if key == ord("t"):
                 next_screen = "tracking_test"
+                break
+            if key == ord("e"):
+                next_screen = "eye"
                 break
             if key == ord("s"):
                 save_counter_zones(output_path, session.zones)
@@ -532,6 +539,25 @@ def run_calibration_with_navigation(config: CalibrationConfig) -> None:
     while current is not None:
         if current == "zone_calibration":
             current = run_calibration_screen(config)
+            continue
+
+        if current == "eye":
+            from cat_cannon.app.eye_screen import EyeConfig, run_eye_screen
+
+            current = run_eye_screen(
+                EyeConfig(
+                    fixed_camera=config.camera,
+                    turret_camera="/dev/turret_cam",
+                    zones_path=config.output_path,
+                    window_width=config.window_width,
+                    window_height=config.window_height,
+                    fullscreen=config.fullscreen,
+                    config_path=config.config_path,
+                    yolo_model=config.yolo_model,
+                    yolo_device=config.yolo_device,
+                    yolo_imgsz=config.yolo_imgsz,
+                )
+            )
             continue
 
         from cat_cannon.app.tracking_test import TrackingTestConfig, run_tracking_test_screen

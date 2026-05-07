@@ -197,7 +197,8 @@ def main() -> None:
             combined = _combine_frames(cv2, primary_frame, secondary_frame)
             cv2.imshow("cat-cannon-bench", combined)
 
-            key = cv2.waitKey(16) & 0xFF
+            _wait_ms = system_config.tracking_tuning.frame_wait_ms if system_config else 10
+            key = cv2.waitKey(_wait_ms) & 0xFF
             if key == 255:
                 continue
 

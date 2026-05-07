@@ -22,6 +22,65 @@ def point_in_polygon(point: Point, polygon: tuple[Point, ...]) -> bool:
     return inside
 
 
+def _segments_intersect(
+    a1: Point, a2: Point, b1: Point, b2: Point
+) -> bool:
+    """Check if line segment a1-a2 intersects segment b1-b2."""
+    def cross(o: Point, a: Point, b: Point) -> float:
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+
+    d1 = cross(b1, b2, a1)
+    d2 = cross(b1, b2, a2)
+    d3 = cross(a1, a2, b1)
+    d4 = cross(a1, a2, b2)
+
+    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
+       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+        return True
+
+    # Collinear cases (treat as non-intersecting for simplicity)
+    return False
+
+
+def bbox_intersects_zone(detection: Detection, zone: CounterZone) -> bool:
+    """Check if any part of the detection bbox overlaps with the zone polygon."""
+    bbox = detection.bbox
+    polygon = zone.polygon
+
+    # Check if any bbox corner is inside the polygon
+    corners = (
+        Point(bbox.x, bbox.y),
+        Point(bbox.x + bbox.width, bbox.y),
+        Point(bbox.x + bbox.width, bbox.y + bbox.height),
+        Point(bbox.x, bbox.y + bbox.height),
+    )
+    for corner in corners:
+        if point_in_polygon(corner, polygon):
+            return True
+
+    # Check if any polygon vertex is inside the bbox
+    for vertex in polygon:
+        if (bbox.x <= vertex.x <= bbox.x + bbox.width and
+                bbox.y <= vertex.y <= bbox.y + bbox.height):
+            return True
+
+    # Check if any polygon edge intersects any bbox edge
+    bbox_edges = (
+        (corners[0], corners[1]),
+        (corners[1], corners[2]),
+        (corners[2], corners[3]),
+        (corners[3], corners[0]),
+    )
+    for i in range(len(polygon)):
+        poly_a = polygon[i]
+        poly_b = polygon[(i + 1) % len(polygon)]
+        for edge_a, edge_b in bbox_edges:
+            if _segments_intersect(poly_a, poly_b, edge_a, edge_b):
+                return True
+
+    return False
+
+
 def detection_footpoint_in_zone(detection: Detection, zone: CounterZone) -> bool:
     return point_in_polygon(detection.bbox.bottom_center, zone.polygon)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from cat_cannon.domain.geometry import detection_footpoint_in_zone
+from cat_cannon.domain.geometry import bbox_intersects_zone
 from cat_cannon.domain.models import CounterZone, Detection
 
 
@@ -63,7 +63,7 @@ def assess_scene(
 
     for cat in cats:
         for zone in zones:
-            if detection_footpoint_in_zone(cat, zone):
+            if bbox_intersects_zone(cat, zone):
                 return SceneAssessment(
                     human_present=human_present,
                     candidate_cat=cat,

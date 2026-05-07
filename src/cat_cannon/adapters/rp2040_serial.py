@@ -71,7 +71,13 @@ class RP2040SerialController(TurretController):
         return self._send("set_angles", pan_deg=pan_deg, tilt_deg=tilt_deg)
 
     def apply_tracking_delta(self, pan_delta: float, tilt_delta: float) -> None:
-        self._send("apply_delta", pan_delta_deg=pan_delta, tilt_delta_deg=tilt_delta)
+        # Negate pan: servo is mounted with reversed pan axis
+        self._send("apply_delta", pan_delta_deg=-pan_delta, tilt_delta_deg=tilt_delta)
+
+    def set_velocity(self, pan_deg_s: float, tilt_deg_s: float) -> None:
+        """Set continuous servo velocity in degrees/sec. Pico interpolates at 50Hz."""
+        # Negate pan: servo is mounted with reversed pan axis
+        self._send("set_velocity", pan_deg_s=-pan_deg_s, tilt_deg_s=tilt_deg_s)
 
     def fire(self) -> None:
         self._send("fire", duration_ms=self.fire_pulse_ms)
@@ -81,6 +87,10 @@ class RP2040SerialController(TurretController):
 
     def safe_stop(self) -> None:
         self._send("safe_stop")
+
+    def relax(self) -> ControllerResponse:
+        """Detach servos to stop buzzing. They re-engage on next movement."""
+        return self._send("relax")
 
     def status(self) -> ControllerResponse:
         return self._send("status")

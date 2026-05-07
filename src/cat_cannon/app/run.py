@@ -278,7 +278,7 @@ def main() -> None:
                 )
                 cv2.imshow("cat-cannon-fixed-camera", frame)
 
-                key = cv2.waitKey(16) & 0xFF
+                key = cv2.waitKey(system_config.tracking_tuning.frame_wait_ms) & 0xFF
                 if key == 255:
                     continue
                 if key == ord("q"):
