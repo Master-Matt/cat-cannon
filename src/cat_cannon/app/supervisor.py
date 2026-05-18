@@ -49,11 +49,11 @@ class SupervisorLoop:
         cats.sort(key=lambda d: d.confidence, reverse=True)
         return cats[0]
 
-    def _find_turret_target(self, turret_detections: list[Detection], policy: DetectionPolicy) -> Detection | None:
-        """Find best target on turret cam: prefer cats, fall back to people."""
-        cat = self._find_turret_cat(turret_detections, policy)
-        if cat is not None:
-            return cat
+    def _find_turret_person(
+        self,
+        turret_detections: list[Detection],
+        policy: DetectionPolicy,
+    ) -> Detection | None:
         people = [
             d for d in turret_detections
             if d.label == policy.person_class
@@ -63,6 +63,21 @@ class SupervisorLoop:
             return None
         people.sort(key=lambda d: d.confidence, reverse=True)
         return people[0]
+
+    def _find_turret_target(
+        self,
+        turret_detections: list[Detection],
+        policy: DetectionPolicy,
+        *,
+        track_people: bool = False,
+    ) -> Detection | None:
+        """Find best turret target for the active target class."""
+        cat = self._find_turret_cat(turret_detections, policy)
+        if cat is not None:
+            return cat
+        if track_people:
+            return self._find_turret_person(turret_detections, policy)
+        return None
 
     def _apply_ema_tracking(self, correction: TurretCorrection) -> None:
         """EMA-filtered position tracking — uses tracking_tuning config."""
@@ -89,13 +104,18 @@ class SupervisorLoop:
         turret_frame_width: int | None = None,
         turret_frame_height: int | None = None,
         detection_policy_override: DetectionPolicy | None = None,
+        track_people: bool = False,
     ) -> SupervisorStepResult:
         policy = detection_policy_override or self.config.detection_policy
         # Fixed camera: zone intersection + counter confirmation + human presence
         assessment = assess_scene(detections=detections, zones=self.zones, policy=policy)
+        turret_human_present = False
+        if turret_detections is not None:
+            turret_human_present = self._find_turret_person(turret_detections, policy) is not None
+        human_present = assessment.human_present or turret_human_present
         counter_confirmed = self._confirmation.update(
             assessment.candidate_cat,
-            assessment.cat_on_counter and not assessment.human_present,
+            assessment.cat_on_counter and not human_present,
         )
 
         aim_locked = False
@@ -111,10 +131,14 @@ class SupervisorLoop:
         }
         should_track = target_visible or self._machine.state in tracking_states
 
-        # Turret camera: track any visible target (cat or person) when armed
+        # Turret camera: track the active target class only when armed.
         turret_target = None
         if armed and turret_detections is not None and turret_frame_width and turret_frame_height:
-            turret_target = self._find_turret_target(turret_detections, policy)
+            turret_target = self._find_turret_target(
+                turret_detections,
+                policy,
+                track_people=track_people,
+            )
             if turret_target is not None:
                 correction = compute_turret_correction(
                     bbox=turret_target.bbox,
@@ -123,7 +147,7 @@ class SupervisorLoop:
                 )
                 aim_locked = correction.aim_locked
                 self._apply_ema_tracking(correction)
-        elif should_track and assessment.candidate_cat is not None:
+        elif armed and should_track and assessment.candidate_cat is not None:
             # Fallback: no turret camera, use fixed camera for targeting
             correction = compute_turret_correction(
                 bbox=assessment.candidate_cat.bbox,
@@ -131,7 +155,7 @@ class SupervisorLoop:
                 calibration=self.config.tracking_calibration,
             )
             aim_locked = correction.aim_locked
-            if not assessment.human_present:
+            if not human_present:
                 self._apply_ema_tracking(correction)
         else:
             # No target — reset EMA state
@@ -141,7 +165,7 @@ class SupervisorLoop:
         result = self._machine.advance(
             SupervisorInputs(
                 armed=armed,
-                human_present=assessment.human_present,
+                human_present=human_present,
                 counter_confirmed=counter_confirmed,
                 target_visible=target_visible,
                 aim_locked=aim_locked,
@@ -151,13 +175,13 @@ class SupervisorLoop:
         # Only safe_stop when disarmed; only fire when no human present
         if not armed:
             self.controller.safe_stop()
-        elif result.fire_commanded and not assessment.human_present:
+        elif result.fire_commanded and not human_present:
             self.controller.fire()
 
         return SupervisorStepResult(
             state=result.state,
             fire_commanded=result.fire_commanded,
-            human_present=assessment.human_present,
+            human_present=human_present,
             counter_confirmed=counter_confirmed,
             target_visible=target_visible,
             aim_locked=aim_locked,

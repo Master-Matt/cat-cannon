@@ -10,6 +10,8 @@ from typing import Literal
 
 import numpy as np
 
+from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
+from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, YoloPrompt
 from cat_cannon.domain.models import SupervisorState
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
@@ -31,6 +33,11 @@ class EyeConfig:
     fixed_camera: int | str = "/dev/fixed_cam"
     turret_camera: int | str | None = "/dev/turret_cam"
     turret_rotate_180: bool = True
+    fixed_camera_width: int = 1280
+    fixed_camera_height: int = 720
+    turret_camera_width: int = 1280
+    turret_camera_height: int = 720
+    camera_fps: int = 30
     port: str | None = None
     baudrate: int = 115200
     fire_ms: int = 120
@@ -38,7 +45,9 @@ class EyeConfig:
     zones_path: str = "configs/zones.yaml"
     yolo_model: str = "yolo11s.pt"
     yolo_device: str | None = None
-    yolo_imgsz: int = 640
+    yolo_imgsz: int = DEFAULT_YOLO_IMGSZ
+    yolo_detector: str = "yolo"
+    yolo_prompts: tuple[YoloPrompt, ...] = DEFAULT_YOLOE_PROMPTS
     window_width: int = 1024
     window_height: int = 600
     fullscreen: bool = True
@@ -275,7 +284,14 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         # Open fixed camera (for zone detection)
         fixed_camera = None
         try:
-            fixed_camera = open_camera(cv2, config.fixed_camera, rotate_180=False)
+            fixed_camera = open_camera(
+                cv2,
+                config.fixed_camera,
+                width=config.fixed_camera_width,
+                height=config.fixed_camera_height,
+                fps=config.camera_fps,
+                rotate_180=False,
+            )
         except (Exception, SystemExit):
             pass
         _bg_resources["fixed_camera"] = fixed_camera
@@ -285,7 +301,12 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         if config.turret_camera:
             try:
                 turret_camera = open_camera(
-                    cv2, config.turret_camera, rotate_180=config.turret_rotate_180
+                    cv2,
+                    config.turret_camera,
+                    width=config.turret_camera_width,
+                    height=config.turret_camera_height,
+                    fps=config.camera_fps,
+                    rotate_180=config.turret_rotate_180,
                 )
             except (Exception, SystemExit):
                 pass
@@ -297,7 +318,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         if config.live_controller:
             try:
                 ctrl = RP2040SerialController.open(port=config.port, baudrate=config.baudrate)
-                session = ControllerSession(controller=ctrl)
+                session = ControllerSession(controller=ctrl, servo_limits=system_config.servo_limits)
                 session.start()
                 controller = ctrl
             except Exception:
@@ -314,6 +335,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     model_path=config.yolo_model,
                     device=config.yolo_device,
                     imgsz=config.yolo_imgsz,
+                    detector=config.yolo_detector,
+                    prompts=config.yolo_prompts,
                 ),
             )
         except Exception:
@@ -380,8 +403,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     last_fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
 
             fixed_detections = last_fixed_perception.detections if last_fixed_perception else []
-            fixed_width = last_fixed_perception.width if last_fixed_perception else 640
-            fixed_height = last_fixed_perception.height if last_fixed_perception else 480
+            fixed_width = last_fixed_perception.width if last_fixed_perception else config.fixed_camera_width
+            fixed_height = last_fixed_perception.height if last_fixed_perception else config.fixed_camera_height
 
             # Turret camera: detect every frame for responsive tracking
             turret_detections = None
@@ -404,6 +427,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 turret_detections=turret_detections,
                 turret_frame_width=turret_width,
                 turret_frame_height=turret_height,
+                track_people=True,
             )
 
             # Compute gaze from turret detection

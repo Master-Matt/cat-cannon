@@ -9,5 +9,7 @@ def test_x11_tracking_runner_checks_display_and_launches_tracking_ui() -> None:
     assert "-m cat_cannon.app.tracking_test" in script
     assert "--fixed-camera" in script
     assert "--turret-camera" in script
+    assert "--config \"$CONFIG_PATH\"" in script
+    assert "CAT_CANNON_CONFIG:-configs/app.yaml" in script
     assert 'CAT_CANNON_FIXED_CAMERA:-/dev/fixed_cam' in script
     assert 'CAT_CANNON_TURRET_CAMERA:-/dev/turret_cam' in script

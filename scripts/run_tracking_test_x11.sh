@@ -18,9 +18,15 @@ if [[ "$ZONES_PATH" == "configs/zones.yaml" && ! -f "$ROOT_DIR/$ZONES_PATH" ]]; 
   ZONES_PATH="configs/zones.example.yaml"
 fi
 
+CONFIG_PATH="${CAT_CANNON_CONFIG:-configs/app.yaml}"
+if [[ "$CONFIG_PATH" == "configs/app.yaml" && ! -f "$ROOT_DIR/$CONFIG_PATH" ]]; then
+  CONFIG_PATH="configs/app.example.yaml"
+fi
+
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON_BIN" -m cat_cannon.app.tracking_test \
     --fixed-camera "${CAT_CANNON_FIXED_CAMERA:-/dev/fixed_cam}" \
     --turret-camera "${CAT_CANNON_TURRET_CAMERA:-/dev/turret_cam}" \
+    --config "$CONFIG_PATH" \
     --zones "$ZONES_PATH" \
     "$@"

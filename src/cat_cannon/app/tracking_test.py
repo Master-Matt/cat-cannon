@@ -10,17 +10,32 @@ from cat_cannon.adapters.interfaces import PerceptionFrame, TurretController
 from cat_cannon.adapters.rp2040_discovery import RP2040DiscoveryError, autodetect_port
 from cat_cannon.adapters.rp2040_serial import RP2040ProtocolError, RP2040SerialController
 from cat_cannon.adapters.ultralytics_yolo import (
+    DEFAULT_YOLO_IMGSZ,
     UltralyticsYoloDetector,
     YoloRuntimeConfig,
     build_detection_summary,
 )
 from cat_cannon.app.controller_session import ControllerSession
 from cat_cannon.app.supervisor import SupervisorLoop, SupervisorStepResult
-from cat_cannon.config import load_counter_zones, load_system_config
+from cat_cannon.config import (
+    DEFAULT_YOLOE_PROMPTS,
+    YoloPrompt,
+    load_counter_zones,
+    load_system_config,
+    load_vision_config,
+)
 from cat_cannon.domain.models import CounterZone, Detection
 from cat_cannon.domain.safety import DetectionPolicy
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
+LimitTarget = Literal["top", "bottom", "left", "right"]
+LIMIT_TARGET_ORDER: tuple[LimitTarget, ...] = ("top", "bottom", "left", "right")
+LIMIT_TARGETS: dict[LimitTarget, tuple[str, str, str]] = {
+    "top": ("servo_min_tilt_deg", "tilt_deg", "top"),
+    "bottom": ("servo_max_tilt_deg", "tilt_deg", "bottom"),
+    "left": ("servo_min_pan_deg", "pan_deg", "left"),
+    "right": ("servo_max_pan_deg", "pan_deg", "right"),
+}
 
 
 class SessionLike(Protocol):
@@ -36,6 +51,11 @@ class TrackingTestConfig:
     fixed_camera: int | str = "/dev/fixed_cam"
     turret_camera: int | str | None = "/dev/turret_cam"
     turret_rotate_180: bool = True
+    fixed_camera_width: int = 1280
+    fixed_camera_height: int = 720
+    turret_camera_width: int = 1280
+    turret_camera_height: int = 720
+    camera_fps: int = 30
     port: str | None = None
     baudrate: int = 115200
     fire_ms: int = 120
@@ -44,7 +64,9 @@ class TrackingTestConfig:
     zones_path: str = "configs/zones.yaml"
     yolo_model: str = "yolo11s.pt"
     yolo_device: str | None = None
-    yolo_imgsz: int = 640
+    yolo_imgsz: int = DEFAULT_YOLO_IMGSZ
+    yolo_detector: str = "yolo"
+    yolo_prompts: tuple[YoloPrompt, ...] = DEFAULT_YOLOE_PROMPTS
     detect_interval: int = 5
     live_controller: bool = False
     arm_on_start: bool = False
@@ -55,10 +77,19 @@ class TrackingTestConfig:
 
 
 @dataclass(frozen=True)
+class LimitCalibrationSample:
+    target: LimitTarget
+    angle_deg: float
+
+
+@dataclass(frozen=True)
 class TrackingTestState:
     armed: bool
     step_deg: float
     track_humans: bool = False
+    limit_target: LimitTarget = "top"
+    limit_flow_active: bool = False
+    limit_samples: tuple[LimitCalibrationSample, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -281,7 +312,7 @@ def handle_tracking_control(
         if session is not None:
             session.enable()
         return TrackingControlResult(
-            state=TrackingTestState(armed=True, step_deg=state.step_deg),
+            state=_copy_tracking_state(state, armed=True),
             message="armed",
         )
 
@@ -290,7 +321,7 @@ def handle_tracking_control(
             session.disable()
         controller.safe_stop()
         return TrackingControlResult(
-            state=TrackingTestState(armed=False, step_deg=state.step_deg),
+            state=_copy_tracking_state(state, armed=False),
             message="disarmed and safe-stopped",
         )
 
@@ -298,7 +329,7 @@ def handle_tracking_control(
         status = _read_controller_status(controller)
         return TrackingControlResult(state=state, message=status)
 
-    gated_controls = {"tilt_up", "tilt_down", "pan_left", "pan_right", "fire"}
+    gated_controls = {"fire"}
     if control in gated_controls and not state.armed:
         return TrackingControlResult(
             state=state,
@@ -337,16 +368,184 @@ def handle_tracking_control(
             message=f"center saved: pan={pan:.1f} tilt={tilt:.1f}",
         )
 
-    if control == "track_human":
-        new_state = TrackingTestState(
-            armed=state.armed,
-            step_deg=state.step_deg,
-            track_humans=not state.track_humans,
+    if control == "relax":
+        relax_method = getattr(controller, "relax", None)
+        if relax_method is None:
+            return TrackingControlResult(state=state, message="relax unavailable in dry-run")
+        relax_method()
+        return TrackingControlResult(state=state, message="servos relaxed")
+
+    if control == "set_limit_target":
+        from cat_cannon.config import ServoLimits
+
+        target = LIMIT_TARGET_ORDER[0]
+        _send_servo_limits(controller, ServoLimits())
+        new_state = _copy_tracking_state(
+            state,
+            limit_target=target,
+            limit_flow_active=True,
+            limit_samples=(),
         )
+        return TrackingControlResult(
+            state=new_state,
+            message=_limit_flow_prompt(target),
+        )
+
+    if control == "save_limit":
+        if config_path is None:
+            return TrackingControlResult(state=state, message="limit save needs a config path")
+        if not state.limit_flow_active:
+            return TrackingControlResult(state=state, message="press Set Limits first")
+        return _save_guided_servo_limit(
+            state=state,
+            controller=controller,
+            config_path=config_path,
+        )
+
+    if control == "clear_limits":
+        from cat_cannon.config import ServoLimits, clear_servo_calibration
+
+        limits = clear_servo_calibration(config_path) if config_path is not None else ServoLimits()
+        _send_servo_limits(controller, limits)
+        return TrackingControlResult(
+            state=_copy_tracking_state(
+                state,
+                limit_target=LIMIT_TARGET_ORDER[0],
+                limit_flow_active=False,
+                limit_samples=(),
+            ),
+            message="servo limits and center cleared",
+        )
+
+    if control == "track_human":
+        new_state = _copy_tracking_state(state, track_humans=not state.track_humans)
         mode = "human" if new_state.track_humans else "cat"
         return TrackingControlResult(state=new_state, message=f"tracking: {mode}")
 
     return TrackingControlResult(state=state, message="")
+
+
+def _copy_tracking_state(state: TrackingTestState, **changes: Any) -> TrackingTestState:
+    values = {
+        "armed": state.armed,
+        "step_deg": state.step_deg,
+        "track_humans": state.track_humans,
+        "limit_target": state.limit_target,
+        "limit_flow_active": state.limit_flow_active,
+        "limit_samples": state.limit_samples,
+    }
+    values.update(changes)
+    return TrackingTestState(**values)
+
+
+def _next_limit_target(current: LimitTarget) -> LimitTarget:
+    index = LIMIT_TARGET_ORDER.index(current)
+    return LIMIT_TARGET_ORDER[(index + 1) % len(LIMIT_TARGET_ORDER)]
+
+
+def _limit_flow_prompt(target: LimitTarget) -> str:
+    return f"limit setup: move to {target} in camera view, then Save Limit"
+
+
+def _save_guided_servo_limit(
+    *,
+    state: TrackingTestState,
+    controller: TurretController,
+    config_path: str,
+) -> TrackingControlResult:
+    sample = _read_limit_sample(target=state.limit_target, controller=controller)
+    if sample is None:
+        return TrackingControlResult(
+            state=state,
+            message=f"{state.limit_target} unavailable in dry-run",
+        )
+
+    samples = state.limit_samples + (sample,)
+    if len(samples) < len(LIMIT_TARGET_ORDER):
+        next_target = LIMIT_TARGET_ORDER[len(samples)]
+        return TrackingControlResult(
+            state=_copy_tracking_state(
+                state,
+                limit_target=next_target,
+                limit_samples=samples,
+            ),
+            message=f"{sample.target} saved: {sample.angle_deg:.1f} deg; {_limit_flow_prompt(next_target)}",
+        )
+
+    by_target = {item.target: item.angle_deg for item in samples}
+    from cat_cannon.config import save_servo_limit_calibration
+
+    limits = save_servo_limit_calibration(
+        config_path,
+        top_tilt_deg=by_target["top"],
+        bottom_tilt_deg=by_target["bottom"],
+        left_pan_deg=by_target["left"],
+        right_pan_deg=by_target["right"],
+    )
+    _send_servo_limits(controller, limits)
+    pan_orientation = "left>right" if by_target["left"] > by_target["right"] else "left<right"
+    tilt_orientation = "top>bottom" if by_target["top"] > by_target["bottom"] else "top<bottom"
+    return TrackingControlResult(
+        state=_copy_tracking_state(
+            state,
+            limit_target=LIMIT_TARGET_ORDER[0],
+            limit_flow_active=False,
+            limit_samples=(),
+        ),
+        message=(
+            "limits saved: "
+            f"pan {limits.pan_min_deg:.1f}-{limits.pan_max_deg:.1f} ({pan_orientation}), "
+            f"tilt {limits.tilt_min_deg:.1f}-{limits.tilt_max_deg:.1f} ({tilt_orientation})"
+        ),
+    )
+
+
+def _read_limit_sample(
+    *,
+    target: LimitTarget,
+    controller: TurretController,
+) -> LimitCalibrationSample | None:
+    _config_key, status_key, _label = LIMIT_TARGETS[target]
+    status_method = getattr(controller, "status", None)
+    if status_method is None:
+        return None
+    response = status_method()
+    payload = getattr(response, "payload", {})
+    return LimitCalibrationSample(target=target, angle_deg=float(payload.get(status_key, 0.0)))
+
+
+def _save_current_servo_limit(*, target: LimitTarget, controller: TurretController, config_path: str) -> str:
+    config_key, status_key, label = LIMIT_TARGETS[target]
+    status_method = getattr(controller, "status", None)
+    if status_method is None:
+        return f"{label} unavailable in dry-run"
+    response = status_method()
+    payload = getattr(response, "payload", {})
+    angle = float(payload.get(status_key, 0.0))
+
+    from cat_cannon.config import save_servo_limit
+
+    limits = save_servo_limit(config_path, config_key, angle)
+    _send_servo_limits(controller, limits)
+    return f"{label} saved: {angle:.1f} deg"
+
+
+def _send_servo_limits(controller: TurretController, limits) -> None:
+    set_directions = getattr(controller, "set_motion_directions", None)
+    if set_directions is not None:
+        set_directions(
+            pan_delta_sign=getattr(limits, "pan_delta_sign", -1),
+            tilt_delta_sign=getattr(limits, "tilt_delta_sign", 1),
+        )
+    set_limits = getattr(controller, "set_servo_limits", None)
+    if set_limits is None:
+        return
+    set_limits(
+        pan_min_deg=limits.pan_min_deg,
+        pan_max_deg=limits.pan_max_deg,
+        tilt_min_deg=limits.tilt_min_deg,
+        tilt_max_deg=limits.tilt_max_deg,
+    )
 
 
 def _read_controller_status(controller: TurretController) -> str:
@@ -374,6 +573,11 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--fire-ms", type=int, default=120)
     parser.add_argument("--step-deg", type=float, default=3.0)
+    parser.add_argument("--fixed-camera-width", type=int, default=1280)
+    parser.add_argument("--fixed-camera-height", type=int, default=720)
+    parser.add_argument("--turret-camera-width", type=int, default=1280)
+    parser.add_argument("--turret-camera-height", type=int, default=720)
+    parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--config", default="configs/app.example.yaml", help="System config path")
     parser.add_argument("--zones", default="configs/zones.yaml", help="Counter zones config path")
     parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
@@ -382,7 +586,12 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
         default=None,
         help="Optional inference device, e.g. cpu or 0",
     )
-    parser.add_argument("--yolo-imgsz", type=int, default=640, help="Inference image size")
+    parser.add_argument(
+        "--yolo-imgsz",
+        type=int,
+        default=None,
+        help="Override vision.yolo_imgsz from the app config",
+    )
     parser.add_argument("--detect-interval", type=int, default=3, help="Run YOLO every N frames (higher = faster UI)")
     parser.add_argument(
         "--live-controller",
@@ -412,19 +621,30 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     if turret is not None and turret.lower() not in ("none", "-1"):
         turret_parsed = _parse_camera(turret)
 
+    vision_config = load_vision_config(args.config)
+    yolo_imgsz = args.yolo_imgsz if args.yolo_imgsz is not None else vision_config.yolo_imgsz
+    yolo_model = args.yolo_model if args.yolo_model else vision_config.selected_model_path
+
     return TrackingTestConfig(
         fixed_camera=_parse_camera(args.fixed_camera),
         turret_camera=turret_parsed,
         turret_rotate_180=not args.no_turret_rotate,
+        fixed_camera_width=args.fixed_camera_width,
+        fixed_camera_height=args.fixed_camera_height,
+        turret_camera_width=args.turret_camera_width,
+        turret_camera_height=args.turret_camera_height,
+        camera_fps=args.camera_fps,
         port=args.port,
         baudrate=args.baudrate,
         fire_ms=args.fire_ms,
         step_deg=args.step_deg,
         config_path=args.config,
         zones_path=args.zones,
-        yolo_model=args.yolo_model,
+        yolo_model=yolo_model,
         yolo_device=args.yolo_device,
-        yolo_imgsz=args.yolo_imgsz,
+        yolo_imgsz=yolo_imgsz,
+        yolo_detector=vision_config.yolo_detector,
+        yolo_prompts=vision_config.yoloe_prompts,
         detect_interval=args.detect_interval,
         live_controller=bool(args.live_controller),
         arm_on_start=bool(args.arm_on_start),
@@ -435,9 +655,17 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     )
 
 
-def _open_camera(cv2, device: int | str, *, rotate_180: bool = False):
+def _open_camera(
+    cv2,
+    device: int | str,
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    rotate_180: bool = False,
+):
     from cat_cannon.adapters.camera import open_camera
-    return open_camera(cv2, device, rotate_180=rotate_180)
+    return open_camera(cv2, device, width=width, height=height, fps=fps, rotate_180=rotate_180)
 
 
 def _resolve_port(port: str | None) -> str:
@@ -498,7 +726,11 @@ def _build_buttons(config: TrackingTestConfig) -> list[UiButton]:
         half("safe_stop", "Safe Stop", 5, 1),
         half("set_center", "Set Center", 6, 0),
         half("track_human", "Track Human", 6, 1),
-        full("quit", "Quit", 7),
+        full("set_limit_target", "Set Limits", 7),
+        half("save_limit", "Save Limit", 8, 0),
+        half("clear_limits", "Clear All", 8, 1),
+        half("relax", "Relax", 9, 0),
+        half("quit", "Quit", 9, 1),
     ]
 
 
@@ -516,6 +748,10 @@ def _control_from_key(key: int) -> str | None:
         ord("p"): "status",
         ord("c"): "set_center",
         ord("h"): "track_human",
+        ord("r"): "relax",
+        ord("l"): "set_limit_target",
+        ord("v"): "save_limit",
+        ord("0"): "clear_limits",
     }
     return keymap.get(key)
 
@@ -533,6 +769,180 @@ def _draw_button(cv2, canvas, button: UiButton, *, active: bool = False) -> None
         (255, 255, 255),
         2,
     )
+
+
+def _control_label_rect(layout: TrackingLayout) -> Rect:
+    placements = [layout.fixed]
+    if layout.turret is not None:
+        placements.append(layout.turret)
+    right_margins = [
+        placement.region.x
+        + placement.region.width
+        - (placement.preview.x + placement.preview.width)
+        for placement in placements
+    ]
+    width = max(0, min(180, min(right_margins, default=0)))
+    return Rect(
+        x=layout.panel_x - width,
+        y=0,
+        width=width,
+        height=layout.window_height,
+    )
+
+
+def _left_label_rect(placement: PreviewPlacement) -> Rect:
+    width = max(0, placement.preview.x - placement.region.x)
+    return Rect(
+        x=placement.region.x,
+        y=placement.region.y,
+        width=min(220, width),
+        height=placement.region.height,
+    )
+
+
+def _fit_text_to_width(cv2, text: str, max_width: int, scale: float, thickness: int) -> str:
+    if max_width <= 0:
+        return ""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    if cv2.getTextSize(text, font, scale, thickness)[0][0] <= max_width:
+        return text
+    ellipsis = "..."
+    trimmed = text
+    while trimmed:
+        candidate = trimmed + ellipsis
+        if cv2.getTextSize(candidate, font, scale, thickness)[0][0] <= max_width:
+            return candidate
+        trimmed = trimmed[:-1]
+    return ""
+
+
+def _draw_margin_text(
+    cv2,
+    canvas,
+    *,
+    text: str,
+    origin: tuple[int, int],
+    max_width: int,
+    scale: float,
+    color: tuple[int, int, int],
+    thickness: int = 1,
+) -> None:
+    fitted = _fit_text_to_width(cv2, text, max_width, scale, thickness)
+    if not fitted:
+        return
+    cv2.putText(canvas, fitted, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+
+
+def _limit_status_text(state: TrackingTestState) -> str:
+    if not state.limit_flow_active:
+        return "Limits: inactive"
+    saved = len(state.limit_samples)
+    total = len(LIMIT_TARGET_ORDER)
+    return f"Limits: move to {state.limit_target} ({saved}/{total} saved)"
+
+
+def _tracking_header_status(status_message: str) -> str:
+    if status_message.lower().startswith("loaded zones"):
+        return ""
+    return status_message[:80]
+
+
+def _draw_panel_header(
+    cv2,
+    canvas,
+    *,
+    layout: TrackingLayout,
+    state: TrackingTestState,
+    status_message: str,
+) -> None:
+    x = layout.panel_x + 16
+    max_width = max(1, layout.window_width - x - 16)
+    track_mode = "human" if state.track_humans else "cat"
+    visible_status = _tracking_header_status(status_message)
+
+    _draw_margin_text(
+        cv2,
+        canvas,
+        text="Tracking Test",
+        origin=(x, 24),
+        max_width=max_width,
+        scale=0.54,
+        color=(255, 255, 255),
+        thickness=1,
+    )
+    _draw_margin_text(
+        cv2,
+        canvas,
+        text=f"Armed: {'YES' if state.armed else 'NO'}  Track: {track_mode}",
+        origin=(x, 44),
+        max_width=max_width,
+        scale=0.40,
+        color=(235, 235, 235),
+    )
+    _draw_margin_text(
+        cv2,
+        canvas,
+        text=_limit_status_text(state),
+        origin=(x, 62),
+        max_width=max_width,
+        scale=0.38,
+        color=(200, 200, 200),
+    )
+    if visible_status:
+        _draw_margin_text(
+            cv2,
+            canvas,
+            text=f"Status: {visible_status}",
+            origin=(x, 80),
+            max_width=max_width,
+            scale=0.36,
+            color=(200, 200, 200),
+        )
+    _draw_margin_text(
+        cv2,
+        canvas,
+        text="Keys: z/e/x/wasd/space/l/v/0/r/q",
+        origin=(x, 98 if visible_status else 80),
+        max_width=max_width,
+        scale=0.32,
+        color=(200, 200, 200),
+    )
+
+
+def _draw_camera_status_in_left_margin(
+    cv2,
+    canvas,
+    *,
+    placement: PreviewPlacement,
+    title: str,
+    status_lines: list[str],
+) -> None:
+    label_rect = _left_label_rect(placement)
+    if label_rect.width < 80:
+        return
+    x = label_rect.x + 8
+    max_width = label_rect.width - 16
+    y = label_rect.y + 24
+    _draw_margin_text(
+        cv2,
+        canvas,
+        text=title,
+        origin=(x, y),
+        max_width=max_width,
+        scale=0.44,
+        color=(0, 200, 255),
+        thickness=1,
+    )
+    for index, line in enumerate(status_lines):
+        _draw_margin_text(
+            cv2,
+            canvas,
+            text=line,
+            origin=(x, y + 22 + index * 18),
+            max_width=max_width,
+            scale=0.34,
+            color=(235, 235, 235),
+        )
 
 
 def _draw_detections(cv2, frame, detections: list[Detection]):
@@ -584,17 +994,6 @@ def _annotate_camera(cv2, frame, title: str, status_lines: list[str]):
     height, width = frame.shape[:2]
     cv2.line(frame, (width // 2 - 20, height // 2), (width // 2 + 20, height // 2), (0, 255, 0), 1)
     cv2.line(frame, (width // 2, height // 2 - 20), (width // 2, height // 2 + 20), (0, 255, 0), 1)
-    cv2.putText(frame, title, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 255), 2)
-    for index, line in enumerate(status_lines):
-        cv2.putText(
-            frame,
-            line,
-            (10, 52 + index * 23),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.52,
-            (255, 255, 255),
-            1,
-        )
     return frame
 
 
@@ -710,21 +1109,41 @@ def _render_ui(
         ),
     )
     _paste_frame(cv2, canvas, fixed_display, layout.fixed)
+    _draw_camera_status_in_left_margin(
+        cv2,
+        canvas,
+        placement=layout.fixed,
+        title="fixed tracking camera",
+        status_lines=_status_lines(
+            state=state,
+            live_controller=live_controller,
+            detection_summary=fixed_detection_summary,
+            step_result=step_result,
+        ),
+    )
 
     if turret_frame is not None and layout.turret is not None:
         turret_display = turret_frame.copy()
         turret_display = _draw_detections(cv2, turret_display, turret_detections)
+        turret_status_lines = [
+            turret_detection_summary,
+            "teleop: e arm  x safe  wasd move  space fire",
+            "z zone calibration  q quit",
+        ]
         turret_display = _annotate_camera(
             cv2,
             turret_display,
             "turret camera",
-            [
-                turret_detection_summary,
-                "teleop: e arm  x safe  wasd move  space fire",
-                "z zone calibration  q quit",
-            ],
+            turret_status_lines,
         )
         _paste_frame(cv2, canvas, turret_display, layout.turret)
+        _draw_camera_status_in_left_margin(
+            cv2,
+            canvas,
+            placement=layout.turret,
+            title="turret camera",
+            status_lines=turret_status_lines,
+        )
 
     cv2.rectangle(
         canvas,
@@ -733,65 +1152,19 @@ def _render_ui(
         (38, 38, 38),
         -1,
     )
-    cv2.putText(
-        canvas,
-        "Tracking Test",
-        (layout.panel_x + 16, 34),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.82,
-        (255, 255, 255),
-        2,
-    )
-    cv2.putText(
-        canvas,
-        f"Armed: {'yes' if state.armed else 'no'}",
-        (layout.panel_x + 16, 64),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.58,
-        (220, 220, 220),
-        1,
-    )
-    cv2.putText(
-        canvas,
-        f"Step: {state.step_deg:.1f} deg",
-        (layout.panel_x + 16, 88),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.56,
-        (220, 220, 220),
-        1,
-    )
     for button in buttons:
-        active = button.key == "arm" and state.armed
+        active = (button.key == "arm" and state.armed) or (
+            button.key == "set_limit_target" and state.limit_flow_active
+        )
         _draw_button(cv2, canvas, button, active=active)
+    _draw_panel_header(
+        cv2,
+        canvas,
+        layout=layout,
+        state=state,
+        status_message=status_message,
+    )
     _draw_trace_log(cv2, canvas, layout=layout, buttons=buttons, trace_log=trace_log)
-
-    cv2.putText(
-        canvas,
-        status_message[:42],
-        (layout.panel_x + 16, layout.window_height - 76),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.42,
-        (235, 235, 235),
-        1,
-    )
-    cv2.putText(
-        canvas,
-        f"Zones: {zones_path}",
-        (layout.panel_x + 16, layout.window_height - 48),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.38,
-        (200, 200, 200),
-        1,
-    )
-    cv2.putText(
-        canvas,
-        "keys: z/e/x/wasd/space/p/q",
-        (layout.panel_x + 16, layout.window_height - 22),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.4,
-        (200, 200, 200),
-        1,
-    )
     return canvas
 
 
@@ -806,6 +1179,8 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
             model_path=config.yolo_model,
             device=config.yolo_device,
             imgsz=config.yolo_imgsz,
+            detector=config.yolo_detector,
+            prompts=config.yolo_prompts,
         ),
     )
 
@@ -818,12 +1193,25 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
             baudrate=config.baudrate,
             fire_pulse_ms=config.fire_ms,
         )
-        session = ControllerSession(controller=controller)
+        session = ControllerSession(controller=controller, servo_limits=system_config.servo_limits)
 
     supervisor = SupervisorLoop(config=system_config, zones=zones, controller=controller)
-    fixed_camera = _open_camera(cv2, config.fixed_camera)
+    fixed_camera = _open_camera(
+        cv2,
+        config.fixed_camera,
+        width=config.fixed_camera_width,
+        height=config.fixed_camera_height,
+        fps=config.camera_fps,
+    )
     turret_camera = (
-        _open_camera(cv2, config.turret_camera, rotate_180=config.turret_rotate_180)
+        _open_camera(
+            cv2,
+            config.turret_camera,
+            width=config.turret_camera_width,
+            height=config.turret_camera_height,
+            fps=config.camera_fps,
+            rotate_180=config.turret_rotate_180,
+        )
         if config.turret_camera is not None
         else None
     )
@@ -833,7 +1221,10 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
     trace_log = TraceLog()
     should_exit = False
     next_screen: ScreenName | None = None
-    trace_log.add(f"starting fixed={config.fixed_camera} turret={config.turret_camera}")
+    trace_log.add(
+        f"starting fixed={config.fixed_camera} {config.fixed_camera_width}x{config.fixed_camera_height} "
+        f"turret={config.turret_camera} {config.turret_camera_width}x{config.turret_camera_height}"
+    )
 
     def apply_control(control: str, *, source: str) -> None:
         nonlocal state, status_message, should_exit, next_screen
@@ -1031,6 +1422,11 @@ def run_tracking_test_with_navigation(config: TrackingTestConfig) -> None:
                     fixed_camera=config.fixed_camera,
                     turret_camera=config.turret_camera,
                     turret_rotate_180=config.turret_rotate_180,
+                    fixed_camera_width=config.fixed_camera_width,
+                    fixed_camera_height=config.fixed_camera_height,
+                    turret_camera_width=config.turret_camera_width,
+                    turret_camera_height=config.turret_camera_height,
+                    camera_fps=config.camera_fps,
                     port=config.port,
                     baudrate=config.baudrate,
                     config_path=config.config_path,
@@ -1038,6 +1434,8 @@ def run_tracking_test_with_navigation(config: TrackingTestConfig) -> None:
                     yolo_model=config.yolo_model,
                     yolo_device=config.yolo_device,
                     yolo_imgsz=config.yolo_imgsz,
+                    yolo_detector=config.yolo_detector,
+                    yolo_prompts=config.yolo_prompts,
                     window_width=config.window_width,
                     window_height=config.window_height,
                     fullscreen=config.fullscreen,
@@ -1051,6 +1449,9 @@ def run_tracking_test_with_navigation(config: TrackingTestConfig) -> None:
         current = run_calibration_screen(
             CalibrationConfig(
                 camera=config.fixed_camera,
+                camera_width=config.fixed_camera_width,
+                camera_height=config.fixed_camera_height,
+                camera_fps=config.camera_fps,
                 output_path=config.zones_path,
                 zone_prefix="zone",
                 window_width=config.window_width,
@@ -1061,6 +1462,8 @@ def run_tracking_test_with_navigation(config: TrackingTestConfig) -> None:
                 yolo_model=config.yolo_model,
                 yolo_device=config.yolo_device,
                 yolo_imgsz=config.yolo_imgsz,
+                yolo_detector=config.yolo_detector,
+                yolo_prompts=config.yolo_prompts,
                 config_path=config.config_path,
             )
         )

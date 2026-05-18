@@ -95,6 +95,19 @@ def test_supervisor_loop_does_not_apply_tracking_delta_when_disarmed() -> None:
     assert controller.stopped >= 1
 
 
+def test_supervisor_does_not_fallback_track_while_disarmed_after_confirmation() -> None:
+    supervisor, controller = _supervisor()
+
+    supervisor.process_frame([_cat_detection()], frame_width=200, frame_height=200, armed=False)
+    result = supervisor.process_frame([_cat_detection()], frame_width=200, frame_height=200, armed=False)
+
+    assert result.counter_confirmed is True
+    assert result.correction is None
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+    assert controller.stopped >= 2
+
+
 def test_supervisor_uses_turret_camera_for_targeting_when_available() -> None:
     supervisor, controller = _supervisor()
 
@@ -120,3 +133,47 @@ def test_supervisor_uses_turret_camera_for_targeting_when_available() -> None:
     assert result.aim_locked is True
     # No servo commands sent because target is already centered (below deadband)
     assert len(controller.pan_commands) == 0
+
+
+def test_supervisor_does_not_track_turret_people_by_default() -> None:
+    supervisor, controller = _supervisor()
+
+    turret_person = Detection("person-1", "person", 0.95, BoundingBox(20, 20, 20, 20))
+
+    result = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[turret_person],
+        turret_frame_width=200,
+        turret_frame_height=200,
+    )
+
+    assert result.correction is None
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+
+
+def test_supervisor_tracks_turret_people_when_enabled_but_keeps_human_lockout() -> None:
+    supervisor, controller = _supervisor()
+
+    turret_person = Detection("person-1", "person", 0.95, BoundingBox(20, 20, 20, 20))
+
+    result = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[turret_person],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        track_people=True,
+    )
+
+    assert result.human_present is True
+    assert result.state == SupervisorState.HUMAN_LOCKOUT
+    assert result.fire_commanded is False
+    assert result.correction is not None
+    assert controller.pan_commands
+    assert controller.fired == 0

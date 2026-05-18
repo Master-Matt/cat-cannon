@@ -14,7 +14,7 @@ from cat_cannon.adapters.ultralytics_yolo import (
 )
 from cat_cannon.app.controller_session import ControllerSession
 from cat_cannon.app.supervisor import SupervisorLoop, SupervisorStepResult
-from cat_cannon.config import load_counter_zones, load_system_config
+from cat_cannon.config import YoloPrompt, load_counter_zones, load_system_config, load_vision_config
 
 
 def _require_cv2():
@@ -38,6 +38,8 @@ class RuntimeConfig:
     yolo_model: str
     yolo_device: str | None
     yolo_imgsz: int
+    yolo_detector: str
+    yolo_prompts: tuple[YoloPrompt, ...]
     live_controller: bool
     arm_on_start: bool
     show_window: bool
@@ -53,7 +55,12 @@ def parse_args() -> RuntimeConfig:
     parser.add_argument("--zones", default="configs/zones.example.yaml", help="Counter zones config path")
     parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
     parser.add_argument("--yolo-device", default=None, help="Optional inference device, e.g. cpu or 0")
-    parser.add_argument("--yolo-imgsz", type=int, default=640, help="Inference image size")
+    parser.add_argument(
+        "--yolo-imgsz",
+        type=int,
+        default=None,
+        help="Override vision.yolo_imgsz from the app config",
+    )
     parser.add_argument(
         "--live-controller",
         action="store_true",
@@ -77,15 +84,20 @@ def parse_args() -> RuntimeConfig:
         camera_val = int(camera_val)
     except (TypeError, ValueError):
         pass
+    vision_config = load_vision_config(args.config)
+    yolo_imgsz = args.yolo_imgsz if args.yolo_imgsz is not None else vision_config.yolo_imgsz
+    yolo_model = args.yolo_model if args.yolo_model else vision_config.selected_model_path
     return RuntimeConfig(
         camera=camera_val,
         port=args.port,
         baudrate=args.baudrate,
         config_path=args.config,
         zones_path=args.zones,
-        yolo_model=args.yolo_model,
+        yolo_model=yolo_model,
         yolo_device=args.yolo_device,
-        yolo_imgsz=args.yolo_imgsz,
+        yolo_imgsz=yolo_imgsz,
+        yolo_detector=vision_config.yolo_detector,
+        yolo_prompts=vision_config.yoloe_prompts,
         live_controller=bool(args.live_controller),
         arm_on_start=bool(args.arm_on_start),
         show_window=bool(args.show_window),
@@ -219,6 +231,8 @@ def main() -> None:
             model_path=config.yolo_model,
             device=config.yolo_device,
             imgsz=config.yolo_imgsz,
+            detector=config.yolo_detector,
+            prompts=config.yolo_prompts,
         ),
     )
 
@@ -230,7 +244,7 @@ def main() -> None:
             port=port,
             baudrate=config.baudrate,
         )
-        session = ControllerSession(controller=controller)
+        session = ControllerSession(controller=controller, servo_limits=system_config.servo_limits)
 
     supervisor = SupervisorLoop(config=system_config, zones=zones, controller=controller)
     camera = _open_camera(cv2, config.camera)

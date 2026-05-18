@@ -1,10 +1,13 @@
+import sys
 from types import SimpleNamespace
 
 from cat_cannon.adapters.ultralytics_yolo import (
+    UltralyticsYoloDetector,
     YoloRuntimeConfig,
     build_detection_summary,
     parse_ultralytics_result,
 )
+from cat_cannon.config import YoloPrompt
 from cat_cannon.domain.models import BoundingBox, Detection
 from cat_cannon.domain.safety import DetectionPolicy
 
@@ -70,6 +73,37 @@ def test_parse_ultralytics_result_filters_to_cat_and_person_thresholds() -> None
     ]
 
 
+def test_parse_ultralytics_result_maps_yoloe_prompts_to_policy_labels() -> None:
+    result = SimpleNamespace(
+        names={0: "people", 1: "cats"},
+        boxes=[
+            _box(cls_id=0, conf=0.82, xyxy=[40, 50, 90, 150]),
+            _box(cls_id=1, conf=0.91, xyxy=[10, 20, 30, 50]),
+        ],
+    )
+
+    detections = parse_ultralytics_result(
+        result=result,
+        policy=_policy(),
+        label_aliases={"people": "person", "cats": "cat"},
+    )
+
+    assert detections == [
+        Detection(
+            track_id="cat-1",
+            label="cat",
+            confidence=0.91,
+            bbox=BoundingBox(x=10.0, y=20.0, width=20.0, height=30.0),
+        ),
+        Detection(
+            track_id="person-0",
+            label="person",
+            confidence=0.82,
+            bbox=BoundingBox(x=40.0, y=50.0, width=50.0, height=100.0),
+        ),
+    ]
+
+
 def test_parse_ultralytics_result_returns_empty_for_missing_boxes() -> None:
     result = SimpleNamespace(names={0: "person"}, boxes=None)
 
@@ -78,9 +112,24 @@ def test_parse_ultralytics_result_returns_empty_for_missing_boxes() -> None:
 
 def test_build_detection_summary_counts_cats_and_people() -> None:
     detections = [
-        Detection(track_id="cat-1", label="cat", confidence=0.9, bbox=BoundingBox(x=0, y=0, width=1, height=1)),
-        Detection(track_id="person-1", label="person", confidence=0.8, bbox=BoundingBox(x=0, y=0, width=1, height=1)),
-        Detection(track_id="cat-2", label="cat", confidence=0.7, bbox=BoundingBox(x=0, y=0, width=1, height=1)),
+        Detection(
+            track_id="cat-1",
+            label="cat",
+            confidence=0.9,
+            bbox=BoundingBox(x=0, y=0, width=1, height=1),
+        ),
+        Detection(
+            track_id="person-1",
+            label="person",
+            confidence=0.8,
+            bbox=BoundingBox(x=0, y=0, width=1, height=1),
+        ),
+        Detection(
+            track_id="cat-2",
+            label="cat",
+            confidence=0.7,
+            bbox=BoundingBox(x=0, y=0, width=1, height=1),
+        ),
     ]
 
     assert build_detection_summary(detections=detections, policy=_policy()) == "cats=2 people=1"
@@ -94,3 +143,53 @@ def test_runtime_config_defaults_to_bundled_model() -> None:
     assert "yolo11s" in resolved
     assert resolved.endswith((".engine", ".onnx", ".pt"))
     assert config.imgsz == 640
+
+
+def test_yoloe_runtime_config_prefers_built_engine_for_default_model() -> None:
+    config = YoloRuntimeConfig(detector="yoloe", model_path="yoloe-11s-seg.pt")
+
+    resolved = config.resolved_model_path()
+
+    assert "yoloe-11s-seg" in resolved
+    assert resolved.endswith((".engine", ".pt"))
+
+
+def test_yoloe_runtime_prefers_engine_even_if_prompt_weights_exist(monkeypatch, tmp_path) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "yoloe-11s-seg.engine").write_bytes(b"engine")
+    (tmp_path / "yoloe-11s-seg.pt").write_bytes(b"weights")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("cat_cannon.adapters.ultralytics_yolo._models_dir", lambda: models_dir)
+
+    config = YoloRuntimeConfig(detector="yoloe", model_path="yoloe-11s-seg.pt")
+
+    assert config.resolved_model_path() == str(models_dir / "yoloe-11s-seg.engine")
+
+
+def test_yoloe_detector_sets_prompt_classes(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeYOLOE:
+        def __init__(self, model_path: str):
+            calls["model_path"] = model_path
+
+        def set_classes(self, classes: list[str]) -> None:
+            calls["classes"] = classes
+
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLOE=FakeYOLOE))
+
+    UltralyticsYoloDetector.open(
+        policy=_policy(),
+        runtime=YoloRuntimeConfig(
+            detector="yoloe",
+            model_path="yoloe-11s-seg.pt",
+            prompts=(
+                YoloPrompt(label="person", text="people"),
+                YoloPrompt(label="cat", text="cats"),
+            ),
+        ),
+    )
+
+    assert calls["model_path"] == "yoloe-11s-seg.pt"
+    assert calls["classes"] == ["people", "cats"]

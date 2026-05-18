@@ -127,6 +127,7 @@ def test_build_rsync_command_excludes_local_virtualenv_and_cache() -> None:
 
     assert "--exclude=.venv/" in command
     assert "--exclude=.pytest_cache/" in command
+    assert "--exclude=*.engine*" in command
     assert "--exclude=everything-claude-code/" in command
     assert command[-2:] == ["/workspace/cat_cannon/", "mdev@192.168.55.1:/home/mdev/cat_cannon/"]
 

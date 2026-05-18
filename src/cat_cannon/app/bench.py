@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 
-from cat_cannon.config import load_system_config
-from cat_cannon.domain.models import Detection
 from cat_cannon.adapters.rp2040_discovery import RP2040DiscoveryError, autodetect_port
 from cat_cannon.adapters.rp2040_serial import RP2040SerialController
 from cat_cannon.adapters.ultralytics_yolo import (
@@ -13,6 +11,8 @@ from cat_cannon.adapters.ultralytics_yolo import (
     build_detection_summary,
 )
 from cat_cannon.app.controller_session import ControllerSession
+from cat_cannon.config import YoloPrompt, load_system_config, load_vision_config
+from cat_cannon.domain.models import Detection
 
 
 def _require_cv2():
@@ -38,22 +38,45 @@ class BenchConfig:
     yolo_model: str
     yolo_device: str | None
     yolo_imgsz: int
+    yolo_detector: str
+    yolo_prompts: tuple[YoloPrompt, ...]
 
 
 def parse_args() -> BenchConfig:
     parser = argparse.ArgumentParser(description="Cat Cannon laptop bench harness")
     parser.add_argument("--port", help="RP2040 serial port, e.g. /dev/ttyACM0")
     parser.add_argument("--camera", type=int, default=0, help="Primary webcam index")
-    parser.add_argument("--secondary-camera", type=int, default=None, help="Optional second webcam index")
+    parser.add_argument(
+        "--secondary-camera",
+        type=int,
+        default=None,
+        help="Optional second webcam index",
+    )
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--step-deg", type=float, default=3.0, help="Pan/tilt delta per keypress")
     parser.add_argument("--fire-ms", type=int, default=120, help="Solenoid pulse duration")
     parser.add_argument("--detect", action="store_true", help="Enable YOLO11 detection overlay")
     parser.add_argument("--config", default="configs/app.example.yaml", help="System config path")
-    parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
-    parser.add_argument("--yolo-device", default=None, help="Optional inference device, e.g. cpu or 0")
-    parser.add_argument("--yolo-imgsz", type=int, default=640, help="Inference image size")
+    parser.add_argument(
+        "--yolo-model",
+        default="",
+        help="YOLO model path (default: bundled yolo11s.pt)",
+    )
+    parser.add_argument(
+        "--yolo-device",
+        default=None,
+        help="Optional inference device, e.g. cpu or 0",
+    )
+    parser.add_argument(
+        "--yolo-imgsz",
+        type=int,
+        default=None,
+        help="Override vision.yolo_imgsz from the app config",
+    )
     args = parser.parse_args()
+    vision_config = load_vision_config(args.config)
+    yolo_imgsz = args.yolo_imgsz if args.yolo_imgsz is not None else vision_config.yolo_imgsz
+    yolo_model = args.yolo_model if args.yolo_model else vision_config.selected_model_path
     return BenchConfig(
         port=args.port,
         camera=args.camera,
@@ -63,9 +86,11 @@ def parse_args() -> BenchConfig:
         fire_ms=args.fire_ms,
         detect=args.detect,
         config_path=args.config,
-        yolo_model=args.yolo_model,
+        yolo_model=yolo_model,
         yolo_device=args.yolo_device,
-        yolo_imgsz=args.yolo_imgsz,
+        yolo_imgsz=yolo_imgsz,
+        yolo_detector=vision_config.yolo_detector,
+        yolo_prompts=vision_config.yoloe_prompts,
     )
 
 
@@ -137,13 +162,16 @@ def main() -> None:
     except RP2040DiscoveryError as exc:
         raise SystemExit(str(exc)) from exc
 
+    system_config = load_system_config(config.config_path) if config.detect else None
     controller = RP2040SerialController.open(
         port=port,
         baudrate=config.baudrate,
         fire_pulse_ms=config.fire_ms,
     )
-    session = ControllerSession(controller=controller)
-    system_config = load_system_config(config.config_path) if config.detect else None
+    session = ControllerSession(
+        controller=controller,
+        servo_limits=system_config.servo_limits if system_config is not None else None,
+    )
     detector = None
     if config.detect and system_config is not None:
         detector = UltralyticsYoloDetector.open(
@@ -152,6 +180,8 @@ def main() -> None:
                 model_path=config.yolo_model,
                 device=config.yolo_device,
                 imgsz=config.yolo_imgsz,
+                detector=config.yolo_detector,
+                prompts=config.yolo_prompts,
             ),
         )
 

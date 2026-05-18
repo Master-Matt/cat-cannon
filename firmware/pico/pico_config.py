@@ -3,6 +3,8 @@ SERVO_FREQUENCY_HZ = 50
 PAN_SERVO_PIN = 0
 TILT_SERVO_PIN = 1
 SOLENOID_PIN = 2
+# D4184-style MOSFET driver input: GPIO low is off, GPIO high is fire.
+SOLENOID_ACTIVE_LOW = False
 STATUS_LED_PIN = "LED"
 
 PAN_MIN_DEG = 0.0
@@ -25,3 +27,4 @@ MAX_FIRE_DURATION_MS = 1000
 
 # Servo idle relax: stop PWM after this many ms without movement to prevent buzzing
 SERVO_IDLE_RELAX_MS = 2000
+SERVO_EPS_DEG = 0.01

@@ -6,13 +6,25 @@ from pathlib import Path
 from typing import Literal
 
 from cat_cannon.adapters.ultralytics_yolo import (
+    DEFAULT_YOLO_IMGSZ,
     UltralyticsYoloDetector,
     YoloRuntimeConfig,
     build_detection_summary,
 )
-from cat_cannon.app.zone_calibration import CalibrationLayout, ZoneCalibrationSession, map_display_to_frame
-from cat_cannon.config import load_counter_zones, load_system_config, save_counter_zones
-from cat_cannon.domain.models import CounterZone, Detection
+from cat_cannon.app.zone_calibration import (
+    CalibrationLayout,
+    ZoneCalibrationSession,
+    map_display_to_frame,
+)
+from cat_cannon.config import (
+    DEFAULT_YOLOE_PROMPTS,
+    YoloPrompt,
+    load_counter_zones,
+    load_system_config,
+    load_vision_config,
+    save_counter_zones,
+)
+from cat_cannon.domain.models import Detection
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 
@@ -37,11 +49,16 @@ class CalibrationConfig:
     window_height: int
     panel_width: int
     fullscreen: bool
+    camera_width: int = 1280
+    camera_height: int = 720
+    camera_fps: int = 30
     detect: bool = True
     detect_interval: int = 3
     yolo_model: str = "yolo11s.pt"
     yolo_device: str | None = None
-    yolo_imgsz: int = 640
+    yolo_imgsz: int = DEFAULT_YOLO_IMGSZ
+    yolo_detector: str = "yolo"
+    yolo_prompts: tuple[YoloPrompt, ...] = DEFAULT_YOLOE_PROMPTS
     config_path: str = "configs/app.example.yaml"
 
 
@@ -61,6 +78,9 @@ class UiButton:
 def parse_args() -> CalibrationConfig:
     parser = argparse.ArgumentParser(description="Touchscreen counter-zone calibration tool")
     parser.add_argument("--camera", default="/dev/fixed_cam", help="Camera device path or index")
+    parser.add_argument("--camera-width", type=int, default=1280, help="Requested camera capture width")
+    parser.add_argument("--camera-height", type=int, default=720, help="Requested camera capture height")
+    parser.add_argument("--camera-fps", type=int, default=30, help="Requested camera capture FPS")
     parser.add_argument("--output", default="configs/zones.example.yaml", help="Output YAML path")
     parser.add_argument("--zone-prefix", default="zone", help="Prefix for generated zone ids")
     parser.add_argument("--window-width", type=int, default=1024, help="Calibration window width")
@@ -70,7 +90,12 @@ def parse_args() -> CalibrationConfig:
     parser.add_argument("--no-detect", action="store_true", help="Disable YOLO overlay for slow/debug sessions")
     parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
     parser.add_argument("--yolo-device", default=None, help="Inference device")
-    parser.add_argument("--yolo-imgsz", type=int, default=640, help="Inference image size")
+    parser.add_argument(
+        "--yolo-imgsz",
+        type=int,
+        default=None,
+        help="Override vision.yolo_imgsz from the app config",
+    )
     parser.add_argument("--config", default="configs/app.example.yaml", help="System config path")
     args = parser.parse_args()
     camera_arg = args.camera
@@ -78,8 +103,14 @@ def parse_args() -> CalibrationConfig:
         camera_arg = int(camera_arg)
     except ValueError:
         pass
+    vision_config = load_vision_config(args.config)
+    yolo_imgsz = args.yolo_imgsz if args.yolo_imgsz is not None else vision_config.yolo_imgsz
+    yolo_model = args.yolo_model if args.yolo_model else vision_config.selected_model_path
     return CalibrationConfig(
         camera=camera_arg,
+        camera_width=args.camera_width,
+        camera_height=args.camera_height,
+        camera_fps=args.camera_fps,
         output_path=args.output,
         zone_prefix=args.zone_prefix,
         window_width=args.window_width,
@@ -87,9 +118,11 @@ def parse_args() -> CalibrationConfig:
         panel_width=args.panel_width,
         fullscreen=bool(args.fullscreen),
         detect=not args.no_detect,
-        yolo_model=args.yolo_model,
+        yolo_model=yolo_model,
         yolo_device=args.yolo_device,
-        yolo_imgsz=args.yolo_imgsz,
+        yolo_imgsz=yolo_imgsz,
+        yolo_detector=vision_config.yolo_detector,
+        yolo_prompts=vision_config.yoloe_prompts,
         config_path=args.config,
     )
 
@@ -211,7 +244,10 @@ def _draw_pending_points(cv2, canvas, points, layout: CalibrationLayout, frame_w
         for point in points
     ]
     for index, point in enumerate(display_points):
-        cv2.circle(canvas, point, 8, (0, 255, 0), -1)
+        color = (0, 255, 255) if index == 0 and len(display_points) >= 3 else (0, 255, 0)
+        cv2.circle(canvas, point, 8, color, -1)
+        if index == 0 and len(display_points) >= 3:
+            cv2.circle(canvas, point, 16, color, 2)
         cv2.putText(
             canvas,
             str(index + 1),
@@ -314,14 +350,22 @@ def _render_ui(
     cv2.putText(canvas, f"Zones: {len(session.zones)}", (layout.panel_x + 16, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (220, 220, 220), 2)
     cv2.putText(
         canvas,
-        f"Pending taps: {len(session.pending_points)}/4",
+        f"Pending points: {len(session.pending_points)}",
         (layout.panel_x + 16, 92),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.6,
         (220, 220, 220),
         2,
     )
-    cv2.putText(canvas, "Tap 4 corners per zone", (16, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(
+        canvas,
+        "Tap points, then tap point 1 to close",
+        (16, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2,
+    )
     cv2.putText(canvas, status_message, (16, layout.window_height - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
     cv2.putText(
         canvas,
@@ -382,11 +426,19 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
                 model_path=config.yolo_model,
                 device=config.yolo_device,
                 imgsz=config.yolo_imgsz,
+                detector=config.yolo_detector,
+                prompts=config.yolo_prompts,
             ),
         )
 
     from cat_cannon.adapters.camera import open_camera
-    camera = open_camera(cv2, config.camera)
+    camera = open_camera(
+        cv2,
+        config.camera,
+        width=config.camera_width,
+        height=config.camera_height,
+        fps=config.camera_fps,
+    )
 
     window_name = "cat-cannon-zone-calibration"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -395,7 +447,7 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
         cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     buttons = _build_buttons(config)
-    status_message = "Tap four corners to create a zone."
+    status_message = "Tap zone points, then tap near the first point to close."
     latest_frame = None
     latest_layout = None
     should_exit = False
@@ -451,9 +503,15 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
         )
         zone = session.add_point(point)
         if zone is not None:
-            status_message = f"Created {zone.zone_id}. Tap four corners for the next zone."
+            status_message = f"Created {zone.zone_id} with {len(zone.polygon)} points."
         else:
-            status_message = f"Captured point {len(session.pending_points)}/4."
+            if len(session.pending_points) >= 3:
+                status_message = (
+                    f"Captured point {len(session.pending_points)}. "
+                    "Tap near point 1 to close."
+                )
+            else:
+                status_message = f"Captured point {len(session.pending_points)}."
 
     cv2.setMouseCallback(window_name, on_mouse)
 
@@ -548,6 +606,9 @@ def run_calibration_with_navigation(config: CalibrationConfig) -> None:
                 EyeConfig(
                     fixed_camera=config.camera,
                     turret_camera="/dev/turret_cam",
+                    fixed_camera_width=config.camera_width,
+                    fixed_camera_height=config.camera_height,
+                    camera_fps=config.camera_fps,
                     zones_path=config.output_path,
                     window_width=config.window_width,
                     window_height=config.window_height,
@@ -556,6 +617,8 @@ def run_calibration_with_navigation(config: CalibrationConfig) -> None:
                     yolo_model=config.yolo_model,
                     yolo_device=config.yolo_device,
                     yolo_imgsz=config.yolo_imgsz,
+                    yolo_detector=config.yolo_detector,
+                    yolo_prompts=config.yolo_prompts,
                 )
             )
             continue
@@ -566,11 +629,19 @@ def run_calibration_with_navigation(config: CalibrationConfig) -> None:
             TrackingTestConfig(
                 fixed_camera=config.camera,
                 turret_camera="/dev/turret_cam",
+                fixed_camera_width=config.camera_width,
+                fixed_camera_height=config.camera_height,
+                camera_fps=config.camera_fps,
                 zones_path=config.output_path,
                 window_width=config.window_width,
                 window_height=config.window_height,
                 panel_width=max(260, config.panel_width),
                 fullscreen=config.fullscreen,
+                yolo_model=config.yolo_model,
+                yolo_device=config.yolo_device,
+                yolo_imgsz=config.yolo_imgsz,
+                yolo_detector=config.yolo_detector,
+                yolo_prompts=config.yolo_prompts,
             )
         )
 

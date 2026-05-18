@@ -37,6 +37,8 @@ class RP2040ProtocolError(RuntimeError):
 class RP2040SerialController(TurretController):
     transport: SerialLike
     fire_pulse_ms: int = 120
+    pan_delta_sign: int = -1
+    tilt_delta_sign: int = 1
     _sequence: int = field(default=0, init=False)
     _io_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _max_noise_lines: int = field(default=8, init=False, repr=False)
@@ -71,13 +73,40 @@ class RP2040SerialController(TurretController):
         return self._send("set_angles", pan_deg=pan_deg, tilt_deg=tilt_deg)
 
     def apply_tracking_delta(self, pan_delta: float, tilt_delta: float) -> None:
-        # Negate pan: servo is mounted with reversed pan axis
-        self._send("apply_delta", pan_delta_deg=-pan_delta, tilt_delta_deg=tilt_delta)
+        self._send(
+            "apply_delta",
+            pan_delta_deg=self.pan_delta_sign * pan_delta,
+            tilt_delta_deg=self.tilt_delta_sign * tilt_delta,
+        )
 
     def set_velocity(self, pan_deg_s: float, tilt_deg_s: float) -> None:
         """Set continuous servo velocity in degrees/sec. Pico interpolates at 50Hz."""
-        # Negate pan: servo is mounted with reversed pan axis
-        self._send("set_velocity", pan_deg_s=-pan_deg_s, tilt_deg_s=tilt_deg_s)
+        self._send(
+            "set_velocity",
+            pan_deg_s=self.pan_delta_sign * pan_deg_s,
+            tilt_deg_s=self.tilt_delta_sign * tilt_deg_s,
+        )
+
+    def set_motion_directions(self, *, pan_delta_sign: int, tilt_delta_sign: int) -> None:
+        """Map camera-POV deltas to physical servo-angle deltas."""
+        self.pan_delta_sign = 1 if pan_delta_sign >= 0 else -1
+        self.tilt_delta_sign = 1 if tilt_delta_sign >= 0 else -1
+
+    def set_servo_limits(
+        self,
+        *,
+        pan_min_deg: float,
+        pan_max_deg: float,
+        tilt_min_deg: float,
+        tilt_max_deg: float,
+    ) -> ControllerResponse:
+        return self._send(
+            "set_servo_limits",
+            pan_min_deg=pan_min_deg,
+            pan_max_deg=pan_max_deg,
+            tilt_min_deg=tilt_min_deg,
+            tilt_max_deg=tilt_max_deg,
+        )
 
     def fire(self) -> None:
         self._send("fire", duration_ms=self.fire_pulse_ms)

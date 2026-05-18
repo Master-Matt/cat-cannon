@@ -2,11 +2,23 @@ from __future__ import annotations
 
 import importlib.resources
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cat_cannon.adapters.interfaces import PerceptionFrame
+from cat_cannon.config import (
+    DEFAULT_VISION_YOLO_IMGSZ,
+    DEFAULT_VISION_YOLOE_MODEL,
+    YoloPrompt,
+)
 from cat_cannon.domain.models import BoundingBox, Detection
 from cat_cannon.domain.safety import DetectionPolicy
+
+DEFAULT_YOLO_IMGSZ = DEFAULT_VISION_YOLO_IMGSZ
+
+
+def _models_dir():
+    return importlib.resources.files("cat_cannon.models")
 
 
 def _bundled_model_path() -> str:
@@ -16,19 +28,42 @@ def _bundled_model_path() -> str:
     in the package but built on-device via trtexec).  Falls back to the
     portable .onnx or .pt file.
     """
-    import pathlib
-
-    models_dir = importlib.resources.files("cat_cannon.models")
+    models_dir = _models_dir()
     # Prefer TensorRT engine (fastest, device-specific)
-    engine = pathlib.Path(str(models_dir.joinpath("yolo11s.engine")))
+    engine = Path(str(models_dir.joinpath("yolo11s.engine")))
     if engine.exists():
         return str(engine)
     # Then ONNX (portable, GPU-accelerated via TensorRT at load time)
-    onnx = pathlib.Path(str(models_dir.joinpath("yolo11s.onnx")))
+    onnx = Path(str(models_dir.joinpath("yolo11s.onnx")))
     if onnx.exists():
         return str(onnx)
     # Fallback to PyTorch weights
     return str(models_dir.joinpath("yolo11s.pt"))
+
+
+def _promptable_model_path(configured_model: str) -> str:
+    model_name = configured_model or DEFAULT_VISION_YOLOE_MODEL
+    model_path = Path(model_name)
+    if model_path.suffix == ".engine":
+        return str(model_path)
+
+    models_dir = _models_dir()
+    if model_path.suffix in (".pt", ".onnx"):
+        sibling_engine = model_path.with_suffix(".engine")
+        if sibling_engine.is_absolute() and sibling_engine.exists():
+            return str(sibling_engine)
+        engine = Path(str(models_dir.joinpath(f"{model_path.stem}.engine")))
+        if engine.exists():
+            return str(engine)
+
+    if model_path.is_absolute() or model_path.exists():
+        return str(model_path)
+
+    local_model = Path(str(models_dir.joinpath(model_path.name)))
+    if local_model.exists():
+        return str(local_model)
+
+    return model_name
 
 
 def _default_device() -> str:
@@ -46,13 +81,25 @@ def _default_device() -> str:
 class YoloRuntimeConfig:
     model_path: str = ""
     device: str | None = None
-    imgsz: int = 640
+    imgsz: int = DEFAULT_YOLO_IMGSZ
+    detector: str = "yolo"
+    prompts: tuple[YoloPrompt, ...] = ()
 
     def resolved_model_path(self) -> str:
+        if self.detector == "yoloe":
+            return _promptable_model_path(self.model_path)
         return self.model_path if self.model_path else _bundled_model_path()
 
     def resolved_device(self) -> str:
         return self.device if self.device else _default_device()
+
+    @property
+    def prompt_texts(self) -> tuple[str, ...]:
+        return tuple(prompt.text for prompt in self.prompts)
+
+    @property
+    def prompt_label_aliases(self) -> dict[str, str]:
+        return {prompt.text: prompt.label for prompt in self.prompts}
 
 
 def build_detection_summary(detections: list[Detection], policy: DetectionPolicy) -> str:
@@ -81,7 +128,11 @@ def _label_threshold(label: str, policy: DetectionPolicy) -> float | None:
     return None
 
 
-def parse_ultralytics_result(result: Any, policy: DetectionPolicy) -> list[Detection]:
+def parse_ultralytics_result(
+    result: Any,
+    policy: DetectionPolicy,
+    label_aliases: dict[str, str] | None = None,
+) -> list[Detection]:
     boxes = getattr(result, "boxes", None)
     if not boxes:
         return []
@@ -90,7 +141,8 @@ def parse_ultralytics_result(result: Any, policy: DetectionPolicy) -> list[Detec
     detections: list[Detection] = []
     for index, box in enumerate(boxes):
         class_id = int(_scalar(box.cls))
-        label = names[class_id]
+        raw_label = names[class_id]
+        label = (label_aliases or {}).get(raw_label, raw_label)
         threshold = _label_threshold(label=label, policy=policy)
         if threshold is None:
             continue
@@ -129,10 +181,17 @@ def parse_ultralytics_result(result: Any, policy: DetectionPolicy) -> list[Detec
 
 
 class UltralyticsYoloDetector:
-    def __init__(self, model: Any, policy: DetectionPolicy, runtime: YoloRuntimeConfig) -> None:
+    def __init__(
+        self,
+        model: Any,
+        policy: DetectionPolicy,
+        runtime: YoloRuntimeConfig,
+        label_aliases: dict[str, str] | None = None,
+    ) -> None:
         self._model = model
         self._policy = policy
         self._runtime = runtime
+        self._label_aliases = label_aliases or {}
 
     @classmethod
     def open(
@@ -140,8 +199,26 @@ class UltralyticsYoloDetector:
         *,
         policy: DetectionPolicy,
         runtime: YoloRuntimeConfig | None = None,
-    ) -> "UltralyticsYoloDetector":
+    ) -> UltralyticsYoloDetector:
         runtime_config = runtime or YoloRuntimeConfig()
+        model_path = runtime_config.resolved_model_path()
+        if runtime_config.detector == "yoloe":
+            try:
+                from ultralytics import YOLOE
+            except ImportError as exc:  # pragma: no cover - environment dependent
+                raise RuntimeError(
+                    "Ultralytics is required for YOLOE prompt detection. Install with: "
+                    "pip install -e '.[bench,vision]'"
+                ) from exc
+            model = YOLOE(model_path)
+            if runtime_config.prompt_texts and not model_path.endswith((".engine", ".onnx")):
+                model.set_classes(list(runtime_config.prompt_texts))
+            return cls(
+                model=model,
+                policy=policy,
+                runtime=runtime_config,
+                label_aliases=runtime_config.prompt_label_aliases,
+            )
         try:
             from ultralytics import YOLO
         except ImportError as exc:  # pragma: no cover - environment dependent
@@ -150,7 +227,7 @@ class UltralyticsYoloDetector:
                 "pip install -e '.[bench,vision]'"
             ) from exc
         return cls(
-            model=YOLO(runtime_config.resolved_model_path(), task="detect"),
+            model=YOLO(model_path, task="detect"),
             policy=policy,
             runtime=runtime_config,
         )
@@ -168,7 +245,11 @@ class UltralyticsYoloDetector:
             kwargs["device"] = self._runtime.resolved_device()
 
         results = self._model.predict(**kwargs)
-        detections = parse_ultralytics_result(result=results[0], policy=self._policy)
+        detections = parse_ultralytics_result(
+            result=results[0],
+            policy=self._policy,
+            label_aliases=self._label_aliases,
+        )
         height, width = frame.shape[:2]
         return PerceptionFrame(
             source_id=source_id,

@@ -9,6 +9,44 @@ from cat_cannon.domain.models import CounterZone, Point
 from cat_cannon.domain.safety import DetectionPolicy
 from cat_cannon.domain.targeting import TrackingCalibration
 
+DEFAULT_VISION_YOLO_IMGSZ = 640
+DEFAULT_VISION_YOLOE_MODEL = "yoloe-11s-seg.pt"
+
+
+@dataclass(frozen=True)
+class YoloPrompt:
+    label: str
+    text: str
+
+
+DEFAULT_YOLOE_PROMPTS: tuple[YoloPrompt, ...] = (
+    YoloPrompt(label="person", text="people"),
+    YoloPrompt(label="cat", text="cats"),
+)
+
+
+@dataclass(frozen=True)
+class VisionConfig:
+    yolo_imgsz: int = DEFAULT_VISION_YOLO_IMGSZ
+    yolo_detector: str = "yolo"
+    yolo_model: str = ""
+    yoloe_model: str = DEFAULT_VISION_YOLOE_MODEL
+    yoloe_prompts: tuple[YoloPrompt, ...] = DEFAULT_YOLOE_PROMPTS
+
+    @property
+    def selected_model_path(self) -> str:
+        if self.yolo_detector == "yoloe":
+            return self.yoloe_model
+        return self.yolo_model
+
+    @property
+    def prompt_texts(self) -> tuple[str, ...]:
+        return tuple(prompt.text for prompt in self.yoloe_prompts)
+
+    @property
+    def prompt_label_aliases(self) -> dict[str, str]:
+        return {prompt.text: prompt.label for prompt in self.yoloe_prompts}
+
 
 @dataclass(frozen=True)
 class TrackingTuning:
@@ -20,11 +58,53 @@ class TrackingTuning:
 
 
 @dataclass(frozen=True)
+class ServoLimits:
+    pan_min_deg: float = 0.0
+    pan_max_deg: float = 180.0
+    tilt_min_deg: float = 30.0
+    tilt_max_deg: float = 150.0
+    pan_left_deg: float | None = None
+    pan_right_deg: float | None = None
+    tilt_top_deg: float | None = None
+    tilt_bottom_deg: float | None = None
+
+    def normalized(self) -> ServoLimits:
+        pan_min = min(self.pan_min_deg, self.pan_max_deg)
+        pan_max = max(self.pan_min_deg, self.pan_max_deg)
+        tilt_min = min(self.tilt_min_deg, self.tilt_max_deg)
+        tilt_max = max(self.tilt_min_deg, self.tilt_max_deg)
+        return ServoLimits(
+            pan_min_deg=pan_min,
+            pan_max_deg=pan_max,
+            tilt_min_deg=tilt_min,
+            tilt_max_deg=tilt_max,
+            pan_left_deg=self.pan_left_deg,
+            pan_right_deg=self.pan_right_deg,
+            tilt_top_deg=self.tilt_top_deg,
+            tilt_bottom_deg=self.tilt_bottom_deg,
+        )
+
+    @property
+    def pan_delta_sign(self) -> int:
+        if self.pan_left_deg is None or self.pan_right_deg is None:
+            return -1
+        return 1 if self.pan_right_deg > self.pan_left_deg else -1
+
+    @property
+    def tilt_delta_sign(self) -> int:
+        if self.tilt_top_deg is None or self.tilt_bottom_deg is None:
+            return 1
+        return 1 if self.tilt_bottom_deg > self.tilt_top_deg else -1
+
+
+@dataclass(frozen=True)
 class SystemConfig:
     cooldown_frames: int
     detection_policy: DetectionPolicy
     tracking_calibration: TrackingCalibration
+    vision: VisionConfig = VisionConfig()
     tracking_tuning: TrackingTuning = TrackingTuning()
+    servo_limits: ServoLimits = ServoLimits()
 
 
 def load_system_config(path: str | Path) -> SystemConfig:
@@ -34,8 +114,20 @@ def load_system_config(path: str | Path) -> SystemConfig:
     system = raw["system"]
     tuning = raw.get("tracking_tuning", {})
 
+    servo_limits = ServoLimits(
+        pan_min_deg=float(tracking.get("servo_min_pan_deg", 0.0)),
+        pan_max_deg=float(tracking.get("servo_max_pan_deg", 180.0)),
+        tilt_min_deg=float(tracking.get("servo_min_tilt_deg", 30.0)),
+        tilt_max_deg=float(tracking.get("servo_max_tilt_deg", 150.0)),
+        pan_left_deg=_optional_float(tracking.get("servo_left_pan_deg")),
+        pan_right_deg=_optional_float(tracking.get("servo_right_pan_deg")),
+        tilt_top_deg=_optional_float(tracking.get("servo_top_tilt_deg")),
+        tilt_bottom_deg=_optional_float(tracking.get("servo_bottom_tilt_deg")),
+    ).normalized()
+
     return SystemConfig(
         cooldown_frames=int(system["cooldown_frames"]),
+        vision=_vision_config_from_raw(raw),
         detection_policy=DetectionPolicy(
             cat_class=str(detection["cat_class"]),
             person_class=str(detection["person_class"]),
@@ -60,7 +152,16 @@ def load_system_config(path: str | Path) -> SystemConfig:
             deadband_deg=float(tuning.get("deadband_deg", 0.3)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
         ),
+        servo_limits=servo_limits,
     )
+
+
+def load_vision_config(path: str | Path) -> VisionConfig:
+    try:
+        raw = _load_yaml(path)
+    except FileNotFoundError:
+        return VisionConfig()
+    return _vision_config_from_raw(raw)
 
 
 def load_counter_zones(path: str | Path) -> list[CounterZone]:
@@ -101,9 +202,184 @@ def save_servo_center(path: str | Path, pan_deg: float, tilt_deg: float) -> None
         yaml.safe_dump(raw, handle, sort_keys=False)
 
 
+def save_servo_limit(path: str | Path, key: str, angle_deg: float) -> ServoLimits:
+    """Update one servo limit in app config and return normalized limits."""
+    valid_keys = {
+        "servo_min_pan_deg",
+        "servo_max_pan_deg",
+        "servo_min_tilt_deg",
+        "servo_max_tilt_deg",
+    }
+    if key not in valid_keys:
+        raise ValueError(f"Unknown servo limit key: {key}")
+
+    raw = _load_yaml(path)
+    tracking = raw.setdefault("tracking", {})
+    tracking[key] = round(float(angle_deg), 2)
+    limits = ServoLimits(
+        pan_min_deg=float(tracking.get("servo_min_pan_deg", 0.0)),
+        pan_max_deg=float(tracking.get("servo_max_pan_deg", 180.0)),
+        tilt_min_deg=float(tracking.get("servo_min_tilt_deg", 30.0)),
+        tilt_max_deg=float(tracking.get("servo_max_tilt_deg", 150.0)),
+        pan_left_deg=_optional_float(tracking.get("servo_left_pan_deg")),
+        pan_right_deg=_optional_float(tracking.get("servo_right_pan_deg")),
+        tilt_top_deg=_optional_float(tracking.get("servo_top_tilt_deg")),
+        tilt_bottom_deg=_optional_float(tracking.get("servo_bottom_tilt_deg")),
+    ).normalized()
+    tracking["servo_min_pan_deg"] = limits.pan_min_deg
+    tracking["servo_max_pan_deg"] = limits.pan_max_deg
+    tracking["servo_min_tilt_deg"] = limits.tilt_min_deg
+    tracking["servo_max_tilt_deg"] = limits.tilt_max_deg
+    with Path(path).open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+    return limits
+
+
+def save_servo_limit_calibration(
+    path: str | Path,
+    *,
+    top_tilt_deg: float,
+    bottom_tilt_deg: float,
+    left_pan_deg: float,
+    right_pan_deg: float,
+) -> ServoLimits:
+    """Persist camera-POV limit points and derived servo min/max bounds."""
+    raw = _load_yaml(path)
+    tracking = raw.setdefault("tracking", {})
+    tracking["servo_top_tilt_deg"] = round(float(top_tilt_deg), 2)
+    tracking["servo_bottom_tilt_deg"] = round(float(bottom_tilt_deg), 2)
+    tracking["servo_left_pan_deg"] = round(float(left_pan_deg), 2)
+    tracking["servo_right_pan_deg"] = round(float(right_pan_deg), 2)
+
+    limits = ServoLimits(
+        pan_min_deg=min(left_pan_deg, right_pan_deg),
+        pan_max_deg=max(left_pan_deg, right_pan_deg),
+        tilt_min_deg=min(top_tilt_deg, bottom_tilt_deg),
+        tilt_max_deg=max(top_tilt_deg, bottom_tilt_deg),
+        pan_left_deg=float(left_pan_deg),
+        pan_right_deg=float(right_pan_deg),
+        tilt_top_deg=float(top_tilt_deg),
+        tilt_bottom_deg=float(bottom_tilt_deg),
+    ).normalized()
+    tracking["servo_min_pan_deg"] = limits.pan_min_deg
+    tracking["servo_max_pan_deg"] = limits.pan_max_deg
+    tracking["servo_min_tilt_deg"] = limits.tilt_min_deg
+    tracking["servo_max_tilt_deg"] = limits.tilt_max_deg
+    with Path(path).open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+    return limits
+
+
+def clear_servo_limits(path: str | Path) -> ServoLimits:
+    """Remove saved servo motion limits and return the default safe range."""
+    raw = _load_yaml(path)
+    tracking = raw.setdefault("tracking", {})
+    _remove_servo_limit_keys(tracking)
+    limits = ServoLimits()
+    with Path(path).open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+    return limits
+
+
+def clear_servo_calibration(path: str | Path) -> ServoLimits:
+    """Remove saved servo motion limits and center offsets."""
+    raw = _load_yaml(path)
+    tracking = raw.setdefault("tracking", {})
+    _remove_servo_limit_keys(tracking)
+    tracking.pop("servo_center_pan_deg", None)
+    tracking.pop("servo_center_tilt_deg", None)
+    limits = ServoLimits()
+    with Path(path).open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(raw, handle, sort_keys=False)
+    return limits
+
+
+def _remove_servo_limit_keys(tracking: dict) -> None:
+    for key in (
+        "servo_min_pan_deg",
+        "servo_max_pan_deg",
+        "servo_min_tilt_deg",
+        "servo_max_tilt_deg",
+        "servo_left_pan_deg",
+        "servo_right_pan_deg",
+        "servo_top_tilt_deg",
+        "servo_bottom_tilt_deg",
+    ):
+        tracking.pop(key, None)
+
+
 def _load_yaml(path: str | Path) -> dict:
     with Path(path).open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
     if not isinstance(data, dict):
         raise ValueError(f"Expected mapping config at {path}")
     return data
+
+
+def _vision_config_from_raw(raw: dict) -> VisionConfig:
+    vision = raw.get("vision", {})
+    if vision is None:
+        vision = {}
+    if not isinstance(vision, dict):
+        raise ValueError("Expected mapping config at vision")
+    return VisionConfig(
+        yolo_imgsz=int(vision.get("yolo_imgsz", DEFAULT_VISION_YOLO_IMGSZ)),
+        yolo_detector=_normalize_yolo_detector(vision.get("yolo_detector", "yolo")),
+        yolo_model=str(vision.get("yolo_model", "") or ""),
+        yoloe_model=str(
+            vision.get("yoloe_model", DEFAULT_VISION_YOLOE_MODEL) or DEFAULT_VISION_YOLOE_MODEL
+        ),
+        yoloe_prompts=_parse_yoloe_prompts(vision.get("yoloe_prompts")),
+    )
+
+
+def _normalize_yolo_detector(value: object) -> str:
+    normalized = str(value).strip().lower().replace("_", "-")
+    aliases = {
+        "standard": "yolo",
+        "yolo": "yolo",
+        "yolo11": "yolo",
+        "yoloe": "yoloe",
+        "yolo-e": "yoloe",
+        "yolo11e": "yoloe",
+        "yolo11-e": "yoloe",
+    }
+    if normalized not in aliases:
+        raise ValueError("vision.yolo_detector must be one of: yolo, yoloe")
+    return aliases[normalized]
+
+
+def _parse_yoloe_prompts(raw_prompts: object) -> tuple[YoloPrompt, ...]:
+    if raw_prompts is None:
+        return DEFAULT_YOLOE_PROMPTS
+
+    prompts: list[YoloPrompt] = []
+    if isinstance(raw_prompts, dict):
+        for label, values in raw_prompts.items():
+            prompt_values = values if isinstance(values, list) else [values]
+            for text in prompt_values:
+                if text is not None and str(text).strip():
+                    prompts.append(YoloPrompt(label=str(label), text=str(text)))
+    elif isinstance(raw_prompts, list):
+        for item in raw_prompts:
+            if isinstance(item, dict):
+                label = item.get("label")
+                text = item.get("text", item.get("prompt"))
+                if label is None or text is None:
+                    raise ValueError("vision.yoloe_prompts list items require label and text")
+                prompts.append(YoloPrompt(label=str(label), text=str(text)))
+            elif item is not None and str(item).strip():
+                text = str(item)
+                prompts.append(YoloPrompt(label=text, text=text))
+    else:
+        raise ValueError("vision.yoloe_prompts must be a mapping or list")
+
+    if not prompts:
+        raise ValueError("vision.yoloe_prompts must contain at least one prompt")
+    return tuple(prompts)
+
+
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    return float(value)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from cat_cannon.domain.models import CounterZone, Point
@@ -34,16 +35,26 @@ def map_display_to_frame(
 @dataclass
 class ZoneCalibrationSession:
     zone_prefix: str = "zone"
+    close_distance_px: float = 20.0
     zones: list[CounterZone] = field(default_factory=list)
     pending_points: list[Point] = field(default_factory=list)
 
     def add_point(self, point: Point) -> CounterZone | None:
+        if self._closes_pending_zone(point):
+            return self._finalize_pending_zone()
         self.pending_points.append(point)
-        if len(self.pending_points) < 4:
-            return None
+        return None
+
+    def _closes_pending_zone(self, point: Point) -> bool:
+        if len(self.pending_points) < 3:
+            return False
+        first = self.pending_points[0]
+        return math.hypot(point.x - first.x, point.y - first.y) <= self.close_distance_px
+
+    def _finalize_pending_zone(self) -> CounterZone:
         zone = CounterZone(
             zone_id=f"{self.zone_prefix}-{len(self.zones) + 1}",
-            polygon=tuple(self.pending_points[:4]),
+            polygon=tuple(self.pending_points),
         )
         self.zones.append(zone)
         self.pending_points.clear()

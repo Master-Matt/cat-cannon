@@ -10,24 +10,41 @@ from cat_cannon.config import load_counter_zones, save_counter_zones
 from cat_cannon.domain.models import CounterZone, Point
 
 
-def test_calibration_session_finalizes_zone_after_four_points() -> None:
+def test_calibration_session_keeps_collecting_until_tap_near_first_point() -> None:
     session = ZoneCalibrationSession(zone_prefix="counter")
 
-    assert session.add_point(Point(10, 10)) is None
-    assert session.add_point(Point(20, 10)) is None
-    assert session.add_point(Point(20, 20)) is None
+    assert session.add_point(Point(100, 100)) is None
+    assert session.add_point(Point(160, 100)) is None
+    assert session.add_point(Point(160, 160)) is None
+    assert session.add_point(Point(100, 160)) is None
+    assert session.add_point(Point(80, 130)) is None
 
-    zone = session.add_point(Point(10, 20))
+    zone = session.add_point(Point(108, 105))
 
     assert zone is not None
     assert zone.zone_id == "counter-1"
-    assert len(zone.polygon) == 4
+    assert zone.polygon == (
+        Point(100, 100),
+        Point(160, 100),
+        Point(160, 160),
+        Point(100, 160),
+        Point(80, 130),
+    )
     assert session.pending_points == []
     assert len(session.zones) == 1
 
 
-def test_calibration_session_undo_prefers_pending_points_then_last_zone() -> None:
+def test_calibration_session_requires_three_points_before_closing_zone() -> None:
     session = ZoneCalibrationSession(zone_prefix="zone")
+
+    assert session.add_point(Point(10, 10)) is None
+    assert session.add_point(Point(11, 11)) is None
+    assert session.zones == []
+    assert session.pending_points == [Point(10, 10), Point(11, 11)]
+
+
+def test_calibration_session_undo_prefers_pending_points_then_last_zone() -> None:
+    session = ZoneCalibrationSession(zone_prefix="zone", close_distance_px=0.25)
     session.add_point(Point(1, 1))
     session.add_point(Point(2, 2))
 
@@ -37,6 +54,7 @@ def test_calibration_session_undo_prefers_pending_points_then_last_zone() -> Non
     session.add_point(Point(2, 1))
     session.add_point(Point(2, 2))
     session.add_point(Point(1, 2))
+    session.add_point(Point(1, 1))
     assert len(session.zones) == 1
 
     session.undo()
@@ -111,6 +129,8 @@ def test_calibration_config_defaults_detect_enabled_with_yolo_settings() -> None
     )
 
     assert config.detect is True
+    assert config.camera_width == 1280
+    assert config.camera_height == 720
     assert config.yolo_model == "yolo11s.pt"
     assert config.yolo_device is None
     assert config.yolo_imgsz == 640

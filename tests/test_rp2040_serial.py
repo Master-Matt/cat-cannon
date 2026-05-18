@@ -42,6 +42,45 @@ def test_controller_sends_expected_set_fire_output_command() -> None:
     assert transport.writes == [b'{"seq":1,"command":"set_fire_output","payload":{"active":true}}\n']
 
 
+def test_controller_sends_expected_servo_limits_command() -> None:
+    transport = FakeSerial([b'{"ok":true,"seq":1,"status":"servo_limits_set","payload":{}}\n'])
+    controller = RP2040SerialController(transport=transport)
+
+    controller.set_servo_limits(
+        pan_min_deg=12.5,
+        pan_max_deg=160.0,
+        tilt_min_deg=35.0,
+        tilt_max_deg=125.5,
+    )
+
+    assert transport.writes == [
+        (
+            b'{"seq":1,"command":"set_servo_limits",'
+            b'"payload":{"pan_min_deg":12.5,"pan_max_deg":160.0,'
+            b'"tilt_min_deg":35.0,"tilt_max_deg":125.5}}\n'
+        )
+    ]
+
+
+def test_controller_uses_detected_motion_directions_for_camera_pov_deltas() -> None:
+    transport = FakeSerial(
+        [
+            b'{"ok":true,"seq":1,"status":"delta_applied","payload":{}}\n',
+            b'{"ok":true,"seq":2,"status":"velocity_set","payload":{}}\n',
+        ]
+    )
+    controller = RP2040SerialController(transport=transport)
+    controller.set_motion_directions(pan_delta_sign=1, tilt_delta_sign=-1)
+
+    controller.apply_tracking_delta(2.5, 1.5)
+    controller.set_velocity(-4.0, 3.0)
+
+    assert transport.writes == [
+        b'{"seq":1,"command":"apply_delta","payload":{"pan_delta_deg":2.5,"tilt_delta_deg":-1.5}}\n',
+        b'{"seq":2,"command":"set_velocity","payload":{"pan_deg_s":-4.0,"tilt_deg_s":-3.0}}\n',
+    ]
+
+
 def test_controller_raises_on_failed_response() -> None:
     transport = FakeSerial([b'{"ok":false,"seq":1,"status":"disabled","payload":{}}\n'])
     controller = RP2040SerialController(transport=transport)

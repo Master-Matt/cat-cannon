@@ -59,7 +59,13 @@ def _is_jetson() -> bool:
 
 
 def open_camera(
-    cv2: Any, device: int | str, width: int = 640, height: int = 480, *, rotate_180: bool = False
+    cv2: Any,
+    device: int | str,
+    width: int = 640,
+    height: int = 480,
+    fps: int = 30,
+    *,
+    rotate_180: bool = False,
 ) -> Any:
     """Open a camera with GPU-accelerated capture when available.
 
@@ -70,7 +76,7 @@ def open_camera(
     is done in the GStreamer pipeline (zero-copy), otherwise via cv2.
     """
     if _is_jetson() and isinstance(device, str):
-        pipeline = _gst_pipeline(device, width=width, height=height, rotate_180=rotate_180)
+        pipeline = _gst_pipeline(device, width=width, height=height, fps=fps, rotate_180=rotate_180)
         camera = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if camera.isOpened():
             return camera
@@ -79,6 +85,16 @@ def open_camera(
     camera = cv2.VideoCapture(device)
     if not camera.isOpened():
         raise SystemExit(f"Failed to open camera {device}")
+    _set_capture_property(cv2, camera, "CAP_PROP_FRAME_WIDTH", width)
+    _set_capture_property(cv2, camera, "CAP_PROP_FRAME_HEIGHT", height)
+    _set_capture_property(cv2, camera, "CAP_PROP_FPS", fps)
     if rotate_180:
         return _RotatedCapture(camera, cv2)
     return camera
+
+
+def _set_capture_property(cv2: Any, camera: Any, property_name: str, value: int) -> None:
+    prop = getattr(cv2, property_name, None)
+    if prop is None or not hasattr(camera, "set"):
+        return
+    camera.set(prop, value)
