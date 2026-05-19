@@ -12,13 +12,14 @@ from cat_cannon.app.tracking_test import (
     _annotate_camera,
     _build_buttons,
     _control_from_key,
-    _draw_camera_status_in_left_margin,
     _draw_button,
+    _draw_camera_status_in_left_margin,
     _draw_panel_header,
     _next_limit_target,
     build_tracking_layout,
     detect_tracking_cameras,
     handle_tracking_control,
+    parse_args,
     resolve_zones_path,
 )
 from cat_cannon.domain.models import BoundingBox, Detection
@@ -114,6 +115,29 @@ def _policy() -> DetectionPolicy:
         person_confidence_threshold=0.5,
         consecutive_counter_frames=2,
     )
+
+
+def test_tracking_parse_args_uses_event_recording_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(
+        """
+vision:
+  yolo_imgsz: 640
+event_recording:
+  enabled: true
+  output_dir: data/events
+  post_shot_seconds: 15
+  discord_webhook_env: CAT_CANNON_TEST_WEBHOOK
+""",
+        encoding="utf-8",
+    )
+
+    config = parse_args(["--config", str(config_path)])
+
+    assert config.event_recording.enabled is True
+    assert config.event_recording.output_dir == "data/events"
+    assert config.event_recording.post_shot_seconds == 15.0
+    assert config.event_recording.discord_webhook_env == "CAT_CANNON_TEST_WEBHOOK"
 
 
 def test_tracking_control_allows_manual_motion_while_disarmed() -> None:
@@ -500,7 +524,9 @@ def test_tracking_panel_header_restores_screen_and_armed_status() -> None:
         panel_width=280,
     )
 
-    buttons = _build_buttons(TrackingTestConfig(window_width=1024, window_height=600, panel_width=280))
+    buttons = _build_buttons(
+        TrackingTestConfig(window_width=1024, window_height=600, panel_width=280)
+    )
 
     _draw_panel_header(
         cv2,

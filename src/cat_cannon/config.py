@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +56,21 @@ class TrackingTuning:
     pan_clamp_deg: float = 3.0
     deadband_deg: float = 0.3
     frame_wait_ms: int = 10
+
+
+@dataclass(frozen=True)
+class EventRecordingConfig:
+    enabled: bool = False
+    output_dir: str = "data/event_videos"
+    post_shot_seconds: float = 15.0
+    max_event_seconds: float = 180.0
+    discord_webhook_url: str = ""
+    discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
+
+    def resolved_discord_webhook_url(self) -> str:
+        if self.discord_webhook_url.strip():
+            return self.discord_webhook_url.strip()
+        return os.environ.get(self.discord_webhook_env, "").strip()
 
 
 @dataclass(frozen=True)
@@ -162,6 +178,14 @@ def load_vision_config(path: str | Path) -> VisionConfig:
     except FileNotFoundError:
         return VisionConfig()
     return _vision_config_from_raw(raw)
+
+
+def load_event_recording_config(path: str | Path) -> EventRecordingConfig:
+    try:
+        raw = _load_yaml(path)
+    except FileNotFoundError:
+        return EventRecordingConfig()
+    return _event_recording_config_from_raw(raw)
 
 
 def load_counter_zones(path: str | Path) -> list[CounterZone]:
@@ -373,6 +397,25 @@ def _vision_config_from_raw(raw: dict) -> VisionConfig:
             vision.get("yoloe_model", DEFAULT_VISION_YOLOE_MODEL) or DEFAULT_VISION_YOLOE_MODEL
         ),
         yoloe_prompts=_parse_yoloe_prompts(vision.get("yoloe_prompts")),
+    )
+
+
+def _event_recording_config_from_raw(raw: dict) -> EventRecordingConfig:
+    event = raw.get("event_recording", {})
+    if event is None:
+        event = {}
+    if not isinstance(event, dict):
+        raise ValueError("Expected mapping config at event_recording")
+    return EventRecordingConfig(
+        enabled=bool(event.get("enabled", False)),
+        output_dir=str(event.get("output_dir", "data/event_videos") or "data/event_videos"),
+        post_shot_seconds=float(event.get("post_shot_seconds", 15.0)),
+        max_event_seconds=float(event.get("max_event_seconds", 180.0)),
+        discord_webhook_url=str(event.get("discord_webhook_url", "") or ""),
+        discord_webhook_env=str(
+            event.get("discord_webhook_env", "CAT_CANNON_DISCORD_WEBHOOK_URL")
+            or "CAT_CANNON_DISCORD_WEBHOOK_URL"
+        ),
     )
 
 

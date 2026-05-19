@@ -10,7 +10,7 @@ from typing import Literal
 import numpy as np
 
 from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
-from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, YoloPrompt
+from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, EventRecordingConfig, YoloPrompt
 from cat_cannon.domain.models import SupervisorState
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
@@ -55,6 +55,7 @@ class EyeConfig:
     collect_cat_dataset: bool = False
     dataset_dir: str = "data/cat_training"
     dataset_sample_hz: float = 1.0
+    event_recording: EventRecordingConfig = field(default_factory=EventRecordingConfig)
 
 
 @dataclass
@@ -267,6 +268,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         from cat_cannon.adapters.rp2040_serial import RP2040SerialController
         from cat_cannon.adapters.ultralytics_yolo import UltralyticsYoloDetector, YoloRuntimeConfig
         from cat_cannon.app.controller_session import ControllerSession
+        from cat_cannon.app.event_video import build_event_video_recorder
         from cat_cannon.app.supervisor import SupervisorLoop
         from cat_cannon.app.tracking_test import _resolve_config_path
         from cat_cannon.config import load_counter_zones, load_system_config
@@ -360,6 +362,12 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 config=system_config, zones=zones, controller=NullTurretController()
             )
 
+        _bg_resources["event_recorder"] = (
+            build_event_video_recorder(config.event_recording, fps=config.camera_fps)
+            if turret_camera is not None
+            else None
+        )
+
         _bg_done.set()
 
     loader_thread = threading.Thread(target=_load_resources, daemon=True)
@@ -439,6 +447,17 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 turret_frame_height=turret_height,
                 track_people=True,
             )
+
+            _event_recorder = _bg_resources.get("event_recorder")
+            if _event_recorder is not None and turret_perception is not None:
+                try:
+                    _event_recorder.update(
+                        cv2=cv2,
+                        turret_frame=turret_frame,
+                        step_result=step_result,
+                    )
+                except Exception:
+                    pass
 
             # Compute gaze from turret detection
             gaze = None
@@ -602,6 +621,12 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             try:
                 controller.safe_stop()
                 controller.close()
+            except Exception:
+                pass
+        _event_recorder = _bg_resources.get("event_recorder")
+        if _event_recorder is not None:
+            try:
+                _event_recorder.close()
             except Exception:
                 pass
         if fixed_camera is not None:

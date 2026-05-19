@@ -60,3 +60,12 @@ tracks the cat with a pan/tilt turret, and conditionally triggers a bounded dete
   - cooldown behavior
 - Reviewed fixed/turret YOLO datasets should be replayable through the dry-run supervisor to
   confirm whether tracking, aim lock, and fire decisions match expectations before live testing.
+
+## Event Clip Requirement
+
+- The turret camera may record local event clips when the fixed camera reports a cat in a valid
+  zone.
+- A firing event keeps recording open until the cat is out of the zone and the configured post-shot
+  window has elapsed.
+- Discord webhook URLs are secrets and should be supplied by environment variable or untracked
+  runtime config; committed examples must leave the URL blank.

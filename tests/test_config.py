@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from cat_cannon.config import (
+    EventRecordingConfig,
     clear_servo_calibration,
     clear_servo_limits,
+    load_event_recording_config,
     load_system_config,
     save_servo_limit,
     save_servo_limit_calibration,
@@ -321,3 +323,28 @@ tracking:
     assert reloaded.servo_limits == limits
     assert reloaded.tracking_calibration.servo_center_pan_deg == 0
     assert reloaded.tracking_calibration.servo_center_tilt_deg == 0
+
+
+def test_load_event_recording_config_supports_webhook_env(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(
+        """
+event_recording:
+  enabled: true
+  output_dir: data/events
+  post_shot_seconds: 15
+  max_event_seconds: 120
+  discord_webhook_env: CAT_CANNON_TEST_WEBHOOK
+""",
+        encoding="utf-8",
+    )
+
+    config = load_event_recording_config(config_path)
+
+    assert config == EventRecordingConfig(
+        enabled=True,
+        output_dir="data/events",
+        post_shot_seconds=15.0,
+        max_event_seconds=120.0,
+        discord_webhook_env="CAT_CANNON_TEST_WEBHOOK",
+    )

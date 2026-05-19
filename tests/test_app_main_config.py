@@ -122,3 +122,25 @@ def test_eye_config_accepts_main_dataset_collection_options(tmp_path: Path) -> N
     assert config.collect_cat_dataset is True
     assert config.dataset_dir == str(tmp_path / "dataset")
     assert config.dataset_sample_hz == 2.0
+
+
+def test_main_uses_event_recording_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    _write_app_config(config_path, yolo_imgsz=640)
+    with config_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            """
+event_recording:
+  enabled: true
+  output_dir: data/events
+  post_shot_seconds: 15
+  discord_webhook_env: CAT_CANNON_TEST_WEBHOOK
+"""
+        )
+
+    config = parse_args(["--config", str(config_path)])
+
+    assert config.event_recording.enabled is True
+    assert config.event_recording.output_dir == "data/events"
+    assert config.event_recording.post_shot_seconds == 15.0
+    assert config.event_recording.discord_webhook_env == "CAT_CANNON_TEST_WEBHOOK"

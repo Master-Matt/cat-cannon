@@ -252,6 +252,21 @@ when confident cat detections occur:
 Both fixed and turret cameras write to separate `images/<camera>` and `labels/<camera>`
 subdirectories under the dataset root. Images are saved without overlays.
 
+Turret event clips can also be recorded when the fixed camera sees a cat in a calibrated zone:
+
+```yaml
+event_recording:
+  enabled: true
+  output_dir: data/event_videos
+  post_shot_seconds: 15
+  discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
+```
+
+With this enabled, the app records the turret camera from zone entry until the cat leaves. If a
+shot fires, recording stays open until the cat is gone and 15 seconds have passed since the last
+shot. Set `CAT_CANNON_DISCORD_WEBHOOK_URL` on the Jetson to post finished clips to Discord without
+committing the webhook secret.
+
 Prepare a reviewed dataset for Ultralytics fine-tuning:
 
 ```bash

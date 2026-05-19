@@ -10,5 +10,6 @@ yolo11*.pt
 *.onnx
 *.engine
 data/
+graphify-out/cache/
 # Runtime configs (user-edited, seeded from .example.yaml)
 configs/app.yaml

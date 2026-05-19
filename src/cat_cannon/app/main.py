@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
-from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, YoloPrompt, load_vision_config
+from cat_cannon.config import (
+    DEFAULT_YOLOE_PROMPTS,
+    EventRecordingConfig,
+    YoloPrompt,
+    load_event_recording_config,
+    load_vision_config,
+)
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 
@@ -41,6 +47,7 @@ class AppConfig:
     collect_cat_dataset: bool = False
     dataset_dir: str = "data/cat_training"
     dataset_sample_hz: float = 1.0
+    event_recording: EventRecordingConfig = field(default_factory=EventRecordingConfig)
 
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:
@@ -78,8 +85,25 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     )
     parser.add_argument("--dataset-dir", default="data/cat_training")
     parser.add_argument("--dataset-sample-hz", type=float, default=1.0)
+    parser.add_argument(
+        "--record-events",
+        action="store_true",
+        help="Enable turret event video recording even if event_recording.enabled is false",
+    )
+    parser.add_argument("--event-video-dir", default=None)
+    parser.add_argument("--event-video-post-shot-s", type=float, default=None)
     args = parser.parse_args(argv)
     vision_config = load_vision_config(args.config)
+    event_recording = load_event_recording_config(args.config)
+    if args.record_events:
+        event_recording = replace(event_recording, enabled=True)
+    if args.event_video_dir is not None:
+        event_recording = replace(event_recording, output_dir=args.event_video_dir)
+    if args.event_video_post_shot_s is not None:
+        event_recording = replace(
+            event_recording,
+            post_shot_seconds=args.event_video_post_shot_s,
+        )
     yolo_imgsz = args.imgsz if args.imgsz is not None else vision_config.yolo_imgsz
     yolo_model = args.model if args.model else vision_config.selected_model_path
     return AppConfig(
@@ -109,6 +133,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         collect_cat_dataset=bool(args.collect_cat_dataset),
         dataset_dir=args.dataset_dir,
         dataset_sample_hz=args.dataset_sample_hz,
+        event_recording=event_recording,
     )
 
 
@@ -147,6 +172,7 @@ def run_app(config: AppConfig) -> None:
                     collect_cat_dataset=config.collect_cat_dataset,
                     dataset_dir=config.dataset_dir,
                     dataset_sample_hz=config.dataset_sample_hz,
+                    event_recording=config.event_recording,
                 )
             )
             continue
@@ -210,6 +236,7 @@ def run_app(config: AppConfig) -> None:
                     collect_cat_dataset=config.collect_cat_dataset,
                     dataset_dir=config.dataset_dir,
                     dataset_sample_hz=config.dataset_sample_hz,
+                    event_recording=config.event_recording,
                 )
             )
             continue

@@ -38,3 +38,11 @@ tracking_tuning:
   pan_clamp_deg: 3.0
   deadband_deg: 0.3
   frame_wait_ms: 10
+
+event_recording:
+  enabled: false
+  output_dir: data/event_videos
+  post_shot_seconds: 15
+  max_event_seconds: 180
+  discord_webhook_url: ''
+  discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL

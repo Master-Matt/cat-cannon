@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -16,12 +16,15 @@ from cat_cannon.adapters.ultralytics_yolo import (
     build_detection_summary,
 )
 from cat_cannon.app.controller_session import ControllerSession
+from cat_cannon.app.event_video import build_event_video_recorder
 from cat_cannon.app.supervisor import SupervisorLoop, SupervisorStepResult
 from cat_cannon.app.yolo_dataset import CatDatasetRecorder
 from cat_cannon.config import (
     DEFAULT_YOLOE_PROMPTS,
+    EventRecordingConfig,
     YoloPrompt,
     load_counter_zones,
+    load_event_recording_config,
     load_system_config,
     load_vision_config,
     scale_counter_zones,
@@ -79,6 +82,7 @@ class TrackingTestConfig:
     collect_cat_dataset: bool = False
     dataset_dir: str = "data/cat_training"
     dataset_sample_hz: float = 1.0
+    event_recording: EventRecordingConfig = field(default_factory=EventRecordingConfig)
 
 
 @dataclass(frozen=True)
@@ -474,7 +478,10 @@ def _save_guided_servo_limit(
                 limit_target=next_target,
                 limit_samples=samples,
             ),
-            message=f"{sample.target} saved: {sample.angle_deg:.1f} deg; {_limit_flow_prompt(next_target)}",
+            message=(
+                f"{sample.target} saved: {sample.angle_deg:.1f} deg; "
+                f"{_limit_flow_prompt(next_target)}"
+            ),
         )
 
     by_target = {item.target: item.angle_deg for item in samples}
@@ -519,7 +526,12 @@ def _read_limit_sample(
     return LimitCalibrationSample(target=target, angle_deg=float(payload.get(status_key, 0.0)))
 
 
-def _save_current_servo_limit(*, target: LimitTarget, controller: TurretController, config_path: str) -> str:
+def _save_current_servo_limit(
+    *,
+    target: LimitTarget,
+    controller: TurretController,
+    config_path: str,
+) -> str:
     config_key, status_key, label = LIMIT_TARGETS[target]
     status_method = getattr(controller, "status", None)
     if status_method is None:
@@ -585,7 +597,11 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--config", default="configs/app.example.yaml", help="System config path")
     parser.add_argument("--zones", default="configs/zones.yaml", help="Counter zones config path")
-    parser.add_argument("--yolo-model", default="", help="YOLO model path (default: bundled yolo11s.pt)")
+    parser.add_argument(
+        "--yolo-model",
+        default="",
+        help="YOLO model path (default: bundled yolo11s.pt)",
+    )
     parser.add_argument(
         "--yolo-device",
         default=None,
@@ -597,7 +613,12 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
         default=None,
         help="Override vision.yolo_imgsz from the app config",
     )
-    parser.add_argument("--detect-interval", type=int, default=3, help="Run YOLO every N frames (higher = faster UI)")
+    parser.add_argument(
+        "--detect-interval",
+        type=int,
+        default=3,
+        help="Run YOLO every N frames (higher = faster UI)",
+    )
     parser.add_argument(
         "--live-controller",
         action="store_true",
@@ -620,6 +641,13 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     )
     parser.add_argument("--dataset-dir", default="data/cat_training")
     parser.add_argument("--dataset-sample-hz", type=float, default=1.0)
+    parser.add_argument(
+        "--record-events",
+        action="store_true",
+        help="Enable turret event video recording even if event_recording.enabled is false",
+    )
+    parser.add_argument("--event-video-dir", default=None)
+    parser.add_argument("--event-video-post-shot-s", type=float, default=None)
     args = parser.parse_args(argv)
 
     def _parse_camera(value: str) -> int | str:
@@ -634,6 +662,16 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
         turret_parsed = _parse_camera(turret)
 
     vision_config = load_vision_config(args.config)
+    event_recording = load_event_recording_config(args.config)
+    if args.record_events:
+        event_recording = replace(event_recording, enabled=True)
+    if args.event_video_dir is not None:
+        event_recording = replace(event_recording, output_dir=args.event_video_dir)
+    if args.event_video_post_shot_s is not None:
+        event_recording = replace(
+            event_recording,
+            post_shot_seconds=args.event_video_post_shot_s,
+        )
     yolo_imgsz = args.yolo_imgsz if args.yolo_imgsz is not None else vision_config.yolo_imgsz
     yolo_model = args.yolo_model if args.yolo_model else vision_config.selected_model_path
 
@@ -667,6 +705,7 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
         collect_cat_dataset=bool(args.collect_cat_dataset),
         dataset_dir=args.dataset_dir,
         dataset_sample_hz=args.dataset_sample_hz,
+        event_recording=event_recording,
     )
 
 
@@ -1049,7 +1088,10 @@ def _status_lines(
         )
     tracking_mode = "human" if state.track_humans else "cat"
     return [
-        f"mode={'live' if live_controller else 'dry-run'} armed={state.armed} track={tracking_mode}",
+        (
+            f"mode={'live' if live_controller else 'dry-run'} "
+            f"armed={state.armed} track={tracking_mode}"
+        ),
         f"state={step_result.state.value} zone={zone} target={target}",
         f"locked={step_result.aim_locked} fire={step_result.fire_commanded}",
         correction,
@@ -1057,7 +1099,14 @@ def _status_lines(
     ]
 
 
-def _draw_trace_log(cv2, canvas, *, layout: TrackingLayout, buttons: list[UiButton], trace_log: TraceLog) -> None:
+def _draw_trace_log(
+    cv2,
+    canvas,
+    *,
+    layout: TrackingLayout,
+    buttons: list[UiButton],
+    trace_log: TraceLog,
+) -> None:
     if not trace_log.lines:
         return
     x = layout.panel_x + 16
@@ -1243,14 +1292,22 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
         if config.collect_cat_dataset
         else None
     )
+    event_recorder = (
+        build_event_video_recorder(config.event_recording, fps=config.camera_fps)
+        if turret_camera is not None
+        else None
+    )
     should_exit = False
     next_screen: ScreenName | None = None
     trace_log.add(
-        f"starting fixed={config.fixed_camera} {config.fixed_camera_width}x{config.fixed_camera_height} "
+        f"starting fixed={config.fixed_camera} "
+        f"{config.fixed_camera_width}x{config.fixed_camera_height} "
         f"turret={config.turret_camera} {config.turret_camera_width}x{config.turret_camera_height}"
     )
     if dataset_recorder is not None:
         trace_log.add(f"cat dataset collection -> {dataset_recorder.root}")
+    if event_recorder is not None:
+        trace_log.add(f"event video recording -> {config.event_recording.output_dir}")
 
     def apply_control(control: str, *, source: str) -> None:
         nonlocal state, status_message, should_exit, next_screen
@@ -1411,6 +1468,17 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 ),
                 detection_policy_override=active_policy if state.track_humans else None,
             )
+            if event_recorder is not None and turret_frame is not None:
+                try:
+                    finalized = event_recorder.update(
+                        cv2=cv2,
+                        turret_frame=turret_frame,
+                        step_result=step_result,
+                    )
+                    if finalized is not None:
+                        trace_log.add(f"event video saved {finalized.video_path.name}")
+                except Exception as exc:
+                    trace_log.add(f"event recorder error: {exc}")
             layout = build_tracking_layout(
                 fixed_frame_width=fixed_frame.shape[1],
                 fixed_frame_height=fixed_frame.shape[0],
@@ -1428,7 +1496,9 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 zones=zones,
                 fixed_detections=perception_frame.detections,
                 turret_detections=(
-                    camera_detections.turret.detections if camera_detections.turret is not None else []
+                    camera_detections.turret.detections
+                    if camera_detections.turret is not None
+                    else []
                 ),
                 buttons=buttons,
                 state=state,
@@ -1459,6 +1529,13 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
         cv2.destroyAllWindows()
         if session is not None:
             session.stop()
+        if event_recorder is not None:
+            try:
+                finalized = event_recorder.close()
+                if finalized is not None:
+                    trace_log.add(f"event video saved {finalized.video_path.name}")
+            except Exception as exc:
+                trace_log.add(f"event recorder close error: {exc}")
 
     return next_screen
 
@@ -1500,6 +1577,7 @@ def run_tracking_test_with_navigation(config: TrackingTestConfig) -> None:
                     collect_cat_dataset=config.collect_cat_dataset,
                     dataset_dir=config.dataset_dir,
                     dataset_sample_hz=config.dataset_sample_hz,
+                    event_recording=config.event_recording,
                 )
             )
             continue
