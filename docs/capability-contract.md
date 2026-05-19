@@ -65,6 +65,8 @@ tracks the cat with a pan/tilt turret, and conditionally triggers a bounded dete
 
 - The turret camera may record local event clips when the fixed camera reports a cat in a valid
   zone.
+- The recorder must tolerate spotty detections by requiring a configurable confirmation window and
+  by waiting through a configurable no-detection hysteresis window before ending confirmed clips.
 - A firing event keeps recording open until the cat is out of the zone and the configured post-shot
   window has elapsed.
 - Discord webhook URLs are secrets and should be supplied by environment variable or untracked

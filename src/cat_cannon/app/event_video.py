@@ -59,6 +59,9 @@ class TurretEventRecorder:
         self._last_frame: Any | None = None
         self._frame_remainder = 0.0
         self._frame_count = 0
+        self._last_zone_at: float | None = None
+        self._positive_count = 0
+        self._confirmed = False
         self._shot_count = 0
         self._zone_id: str | None = None
 
@@ -92,19 +95,26 @@ class TurretEventRecorder:
                 zone_id=step_result.active_zone_id,
             )
 
-        if step_result.active_zone_id is not None:
-            self._zone_id = step_result.active_zone_id
+        if cat_in_zone:
+            self._record_zone_detection(now=now_s, zone_id=step_result.active_zone_id)
         if step_result.fire_commanded:
             self._last_shot_at = now_s
             self._shot_count += 1
+            self._confirmed = True
 
         self._write_frame(cv2=cv2, turret_frame=turret_frame, now=now_s)
-        if self._should_finalize(cat_in_zone=cat_in_zone, now=now_s):
+        if self._should_discard_unconfirmed(now=now_s):
+            self._discard()
+            return None
+        if self._should_finalize(now=now_s):
             return self._finalize(now=now_s)
         return None
 
     def close(self) -> EventVideoFinalize | None:
         if not self.is_recording:
+            return None
+        if not self._confirmed:
+            self._discard()
             return None
         return self._finalize(now=time.time(), reason="shutdown")
 
@@ -117,6 +127,9 @@ class TurretEventRecorder:
         self._last_frame = None
         self._frame_remainder = 0.0
         self._frame_count = 0
+        self._last_zone_at = None
+        self._positive_count = 0
+        self._confirmed = False
         self._shot_count = 0
         self._zone_id = zone_id
         output_dir = Path(self.config.output_dir)
@@ -125,12 +138,20 @@ class TurretEventRecorder:
         suffix = uuid.uuid4().hex[:8]
         self._video_path = output_dir / f"turret_event_{timestamp}_{suffix}.mp4"
         fourcc = cv2.VideoWriter_fourcc(*self.codec)
-        self._writer = cv2.VideoWriter(str(self._video_path), fourcc, self.fps, self._frame_size)
-        if hasattr(self._writer, "isOpened") and not self._writer.isOpened():
-            self._writer = None
+        writer = cv2.VideoWriter(str(self._video_path), fourcc, self.fps, self._frame_size)
+        if hasattr(writer, "isOpened") and not writer.isOpened():
             self._video_path = None
             self._frame_size = None
             raise RuntimeError("failed to open event video writer")
+        self._writer = writer
+
+    def _record_zone_detection(self, *, now: float, zone_id: str | None) -> None:
+        self._last_zone_at = now
+        self._positive_count += 1
+        if zone_id is not None:
+            self._zone_id = zone_id
+        if self._positive_count >= max(1, self.config.zone_confirm_detections):
+            self._confirmed = True
 
     def _write_frame(self, *, cv2: Any, turret_frame: Any, now: float) -> None:
         if self._writer is None or self._frame_size is None:
@@ -156,14 +177,42 @@ class TurretEventRecorder:
         self._frame_remainder = exact_frames - frames_to_write
         return max(0, frames_to_write)
 
-    def _should_finalize(self, *, cat_in_zone: bool, now: float) -> bool:
+    def _should_discard_unconfirmed(self, *, now: float) -> bool:
+        if self._confirmed:
+            return False
+        if self._started_at is None:
+            return False
+        event_age = now - self._started_at
+        if event_age >= self.config.max_event_seconds:
+            return True
+        return event_age >= max(0.0, self.config.zone_confirm_seconds)
+
+    def _should_finalize(self, *, now: float) -> bool:
         if self._started_at is not None and now - self._started_at >= self.config.max_event_seconds:
             return True
-        if cat_in_zone:
+        if not self._confirmed:
+            return False
+        if self._last_zone_at is None:
+            zone_lost = True
+        else:
+            zone_lost = now - self._last_zone_at >= max(0.0, self.config.zone_lost_seconds)
+        if not zone_lost:
             return False
         if self._last_shot_at is None:
             return True
         return now - self._last_shot_at >= self.config.post_shot_seconds
+
+    def _discard(self) -> None:
+        writer = self._writer
+        video_path = self._video_path
+        self._reset_recording_state()
+        if writer is not None:
+            writer.release()
+        if video_path is not None:
+            try:
+                video_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def _finalize(self, *, now: float, reason: str = "complete") -> EventVideoFinalize:
         writer = self._writer
@@ -172,6 +221,7 @@ class TurretEventRecorder:
         last_frame = self._last_frame
         frame_count = self._frame_count
         zone_id = self._zone_id or "-"
+        positive_count = self._positive_count
         shot_count = self._shot_count
         duration = 0.0 if started_at is None else max(0.0, now - started_at)
         if writer is not None and last_frame is not None:
@@ -180,6 +230,22 @@ class TurretEventRecorder:
                 writer.write(last_frame)
                 frame_count += 1
 
+        self._reset_recording_state()
+
+        if writer is not None:
+            writer.release()
+        if video_path is None:
+            raise RuntimeError("event video finalized without a path")
+
+        content = (
+            "Cat Cannon turret event "
+            f"zone={zone_id} confirmed={positive_count} shots={shot_count} "
+            f"duration={duration:.1f}s reason={reason}"
+        )
+        self.publisher.publish(video_path, content)
+        return EventVideoFinalize(video_path=video_path, content=content)
+
+    def _reset_recording_state(self) -> None:
         self._writer = None
         self._video_path = None
         self._frame_size = None
@@ -189,20 +255,11 @@ class TurretEventRecorder:
         self._last_frame = None
         self._frame_remainder = 0.0
         self._frame_count = 0
+        self._last_zone_at = None
+        self._positive_count = 0
+        self._confirmed = False
         self._shot_count = 0
         self._zone_id = None
-
-        if writer is not None:
-            writer.release()
-        if video_path is None:
-            raise RuntimeError("event video finalized without a path")
-
-        content = (
-            "Cat Cannon turret event "
-            f"zone={zone_id} shots={shot_count} duration={duration:.1f}s reason={reason}"
-        )
-        self.publisher.publish(video_path, content)
-        return EventVideoFinalize(video_path=video_path, content=content)
 
 
 class DiscordWebhookPublisher:

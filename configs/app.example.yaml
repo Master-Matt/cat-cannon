@@ -43,6 +43,9 @@ event_recording:
   enabled: false
   output_dir: data/event_videos
   post_shot_seconds: 15
+  zone_confirm_seconds: 5
+  zone_confirm_detections: 20
+  zone_lost_seconds: 5
   max_event_seconds: 180
   discord_webhook_url: ''
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL

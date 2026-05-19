@@ -148,6 +148,9 @@ event_recording:
   enabled: true
   output_dir: data/event_videos
   post_shot_seconds: 15
+  zone_confirm_seconds: 5
+  zone_confirm_detections: 20
+  zone_lost_seconds: 5
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
 ```
 
@@ -157,15 +160,18 @@ Set the Discord webhook URL in the Jetson environment rather than committing it:
 export CAT_CANNON_DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
 ```
 
-Finished clips are posted with mentions disabled and are also kept under `data/event_videos`.
-The event recorder reads config at app startup, so restart the app after changing `configs/app.yaml`.
+The recorder starts tentatively on the first in-zone cat update, keeps the clip only after at least
+`zone_confirm_detections` positive updates arrive within `zone_confirm_seconds`, and then waits for
+`zone_lost_seconds` without an in-zone detection before stopping. Finished clips are posted with
+mentions disabled and are also kept under `data/event_videos`. The event recorder reads config at
+app startup, so restart the app after changing `configs/app.yaml`.
 
 Synthetic smoke-test expectation:
 
 - `load_event_recording_config("configs/app.yaml")` reports `enabled=True`
 - `webhook_configured` is true, without printing the webhook URL
 - a generated turret event writes an `.mp4` under `data/event_videos`
-- Discord accepts the upload and receives a message like `zone=counter shots=1`
+- Discord accepts the upload and receives a message like `zone=counter confirmed=20 shots=1`
 
 After reviewing labels, validate the firing algorithm offline before enabling live actuation:
 

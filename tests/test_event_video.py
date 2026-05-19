@@ -76,7 +76,12 @@ def test_turret_event_recorder_records_zone_entry_until_cat_leaves_without_shot(
     cv2 = FakeCv2()
     publisher = FakePublisher()
     recorder = TurretEventRecorder(
-        config=EventRecordingConfig(enabled=True, output_dir=tmp_path),
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            zone_confirm_detections=1,
+            zone_lost_seconds=0.0,
+        ),
         fps=30,
         publisher=publisher,
     )
@@ -99,7 +104,7 @@ def test_turret_event_recorder_discards_unconfirmed_short_detection(
     recorder = TurretEventRecorder(
         config=EventRecordingConfig(
             enabled=True,
-            output_dir=tmp_path,
+            output_dir=str(tmp_path),
             zone_confirm_seconds=5.0,
             zone_confirm_detections=20,
             zone_lost_seconds=5.0,
@@ -122,6 +127,28 @@ def test_turret_event_recorder_discards_unconfirmed_short_detection(
     assert not any(tmp_path.glob("*.mp4"))
 
 
+def test_turret_event_recorder_close_discards_unconfirmed_detection(tmp_path: Path) -> None:
+    cv2 = FakeCv2()
+    publisher = FakePublisher()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            zone_confirm_seconds=5.0,
+            zone_confirm_detections=20,
+        ),
+        fps=10,
+        publisher=publisher,
+    )
+
+    recorder.update(cv2=cv2, turret_frame=FakeFrame(), step_result=_result(zone="counter"), now=0.0)
+
+    assert recorder.close() is None
+    assert publisher.published == []
+    assert cv2.writers[0].released is True
+    assert not any(tmp_path.glob("*.mp4"))
+
+
 def test_turret_event_recorder_waits_for_zone_lost_hysteresis_after_confirmation(
     tmp_path: Path,
 ) -> None:
@@ -130,7 +157,7 @@ def test_turret_event_recorder_waits_for_zone_lost_hysteresis_after_confirmation
     recorder = TurretEventRecorder(
         config=EventRecordingConfig(
             enabled=True,
-            output_dir=tmp_path,
+            output_dir=str(tmp_path),
             zone_confirm_seconds=5.0,
             zone_confirm_detections=20,
             zone_lost_seconds=5.0,
@@ -171,7 +198,7 @@ def test_turret_event_recorder_ignores_disarmed_zone_detections(tmp_path: Path) 
     cv2 = FakeCv2()
     publisher = FakePublisher()
     recorder = TurretEventRecorder(
-        config=EventRecordingConfig(enabled=True, output_dir=tmp_path),
+        config=EventRecordingConfig(enabled=True, output_dir=str(tmp_path)),
         fps=30,
         publisher=publisher,
     )
@@ -193,7 +220,7 @@ def test_turret_event_recorder_extends_until_post_shot_window(tmp_path: Path) ->
     recorder = TurretEventRecorder(
         config=EventRecordingConfig(
             enabled=True,
-            output_dir=tmp_path,
+            output_dir=str(tmp_path),
             post_shot_seconds=15.0,
         ),
         fps=30,
@@ -226,7 +253,7 @@ def test_turret_event_recorder_preserves_wall_clock_duration_for_sparse_updates(
     recorder = TurretEventRecorder(
         config=EventRecordingConfig(
             enabled=True,
-            output_dir=tmp_path,
+            output_dir=str(tmp_path),
             post_shot_seconds=15.0,
         ),
         fps=10,

@@ -333,6 +333,9 @@ event_recording:
   enabled: true
   output_dir: data/events
   post_shot_seconds: 15
+  zone_confirm_seconds: 5
+  zone_confirm_detections: 20
+  zone_lost_seconds: 5
   max_event_seconds: 120
   discord_webhook_env: CAT_CANNON_TEST_WEBHOOK
 """,
@@ -345,6 +348,9 @@ event_recording:
         enabled=True,
         output_dir="data/events",
         post_shot_seconds=15.0,
+        zone_confirm_seconds=5.0,
+        zone_confirm_detections=20,
+        zone_lost_seconds=5.0,
         max_event_seconds=120.0,
         discord_webhook_env="CAT_CANNON_TEST_WEBHOOK",
     )

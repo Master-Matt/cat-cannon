@@ -134,6 +134,9 @@ event_recording:
   enabled: true
   output_dir: data/events
   post_shot_seconds: 15
+  zone_confirm_seconds: 5
+  zone_confirm_detections: 20
+  zone_lost_seconds: 5
   discord_webhook_env: CAT_CANNON_TEST_WEBHOOK
 """
         )
@@ -143,4 +146,7 @@ event_recording:
     assert config.event_recording.enabled is True
     assert config.event_recording.output_dir == "data/events"
     assert config.event_recording.post_shot_seconds == 15.0
+    assert config.event_recording.zone_confirm_seconds == 5.0
+    assert config.event_recording.zone_confirm_detections == 20
+    assert config.event_recording.zone_lost_seconds == 5.0
     assert config.event_recording.discord_webhook_env == "CAT_CANNON_TEST_WEBHOOK"

@@ -63,6 +63,9 @@ class EventRecordingConfig:
     enabled: bool = False
     output_dir: str = "data/event_videos"
     post_shot_seconds: float = 15.0
+    zone_confirm_seconds: float = 5.0
+    zone_confirm_detections: int = 20
+    zone_lost_seconds: float = 5.0
     max_event_seconds: float = 180.0
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
@@ -410,6 +413,9 @@ def _event_recording_config_from_raw(raw: dict) -> EventRecordingConfig:
         enabled=bool(event.get("enabled", False)),
         output_dir=str(event.get("output_dir", "data/event_videos") or "data/event_videos"),
         post_shot_seconds=float(event.get("post_shot_seconds", 15.0)),
+        zone_confirm_seconds=float(event.get("zone_confirm_seconds", 5.0)),
+        zone_confirm_detections=int(event.get("zone_confirm_detections", 20)),
+        zone_lost_seconds=float(event.get("zone_lost_seconds", 5.0)),
         max_event_seconds=float(event.get("max_event_seconds", 180.0)),
         discord_webhook_url=str(event.get("discord_webhook_url", "") or ""),
         discord_webhook_env=str(
