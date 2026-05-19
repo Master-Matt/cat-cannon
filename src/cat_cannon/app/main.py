@@ -38,6 +38,9 @@ class AppConfig:
     fullscreen: bool = True
     live_controller: bool = True
     arm_on_start: bool = False
+    collect_cat_dataset: bool = False
+    dataset_dir: str = "data/cat_training"
+    dataset_sample_hz: float = 1.0
 
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:
@@ -68,6 +71,13 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     parser.add_argument("--no-fullscreen", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Don't connect to hardware")
     parser.add_argument("--arm", action="store_true")
+    parser.add_argument(
+        "--collect-cat-dataset",
+        action="store_true",
+        help="Save raw cat-detection frames and YOLO labels for training",
+    )
+    parser.add_argument("--dataset-dir", default="data/cat_training")
+    parser.add_argument("--dataset-sample-hz", type=float, default=1.0)
     args = parser.parse_args(argv)
     vision_config = load_vision_config(args.config)
     yolo_imgsz = args.imgsz if args.imgsz is not None else vision_config.yolo_imgsz
@@ -96,6 +106,9 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         fullscreen=not args.no_fullscreen,
         live_controller=not args.dry_run,
         arm_on_start=args.arm,
+        collect_cat_dataset=bool(args.collect_cat_dataset),
+        dataset_dir=args.dataset_dir,
+        dataset_sample_hz=args.dataset_sample_hz,
     )
 
 
@@ -131,6 +144,9 @@ def run_app(config: AppConfig) -> None:
                     fullscreen=config.fullscreen,
                     live_controller=config.live_controller,
                     arm_on_start=config.arm_on_start,
+                    collect_cat_dataset=config.collect_cat_dataset,
+                    dataset_dir=config.dataset_dir,
+                    dataset_sample_hz=config.dataset_sample_hz,
                 )
             )
             continue
@@ -190,6 +206,10 @@ def run_app(config: AppConfig) -> None:
                     panel_width=280,
                     fullscreen=config.fullscreen,
                     live_controller=config.live_controller,
+                    arm_on_start=config.arm_on_start,
+                    collect_cat_dataset=config.collect_cat_dataset,
+                    dataset_dir=config.dataset_dir,
+                    dataset_sample_hz=config.dataset_sample_hz,
                 )
             )
             continue

@@ -85,8 +85,10 @@ For a touchscreen-sized full-screen layout:
 
 The calibrator works with either touch or a mouse:
 
-- tap or click four corners to create one zone
+- tap or click arbitrary points around one zone
+- tap near the first point to close the polygon
 - `Save Zones` writes the YAML file used by the fixed-camera runtime
+- saved zones include a reference frame and normalized points for resolution-invariant scaling
 - `Undo`, `Clear Pending`, and `Delete Last` help refine the layout without editing YAML by hand
 - `Tracking Test` switches directly into the tracking/teleop screen
 
@@ -105,8 +107,17 @@ On the Jetson with udev symlinks, use the device paths:
 ```
 
 The fixed camera pane shows detections, zones, and tracking state. The turret camera pane is for
-visual confirmation while using the on-screen teleop buttons or `e`, `x`, `w/a/s/d`, `space`, `p`,
-and `q`.
+visual confirmation while using the on-screen teleop buttons or keyboard controls:
+
+- `e` / `x`: arm and disarm
+- `w/a/s/d`: manual tilt/pan, allowed even while disarmed
+- `h`: toggle human tracking for aim testing; defaults off when entering the screen
+- `c`: save current center
+- `l`, then `v`: walk through top, bottom, left, and right guided servo limits
+- `0`: clear saved center and limits
+- `space`: fire once when armed
+- `p`: poll controller status
+- `q`: quit
 
 ## Quick Smoke Test
 
@@ -127,7 +138,7 @@ Live fire path:
 If the Pico is attached to the Jetson and you are SSH'd in from the laptop, use:
 
 ```bash
-./scripts/run_teleop.sh --port /dev/ttyACM1
+./scripts/run_teleop.sh --port /dev/ttyACM0
 ```
 
 Controls:
@@ -145,7 +156,36 @@ Controls:
 For relay and solenoid bench debugging, you can temporarily use a longer pulse:
 
 ```bash
-./scripts/run_teleop.sh --port /dev/ttyACM1 --fire-ms 750 --arm-on-start
+./scripts/run_teleop.sh --port /dev/ttyACM0 --fire-ms 750 --arm-on-start
+```
+
+## Dataset Capture and Offline Replay
+
+The app can collect raw training images and YOLO labels at a fixed sampling rate when cats are
+detected:
+
+```bash
+./scripts/run_app.sh --collect-cat-dataset --dataset-dir data/cat_training
+```
+
+After reviewing labels, prepare a YOLO fine-tuning dataset:
+
+```bash
+python scripts/prepare_cat_finetune_dataset.py \
+  --source data/reviewed_cat_training \
+  --output data/fine_tune/cat_v1 \
+  --val-fraction 0.2
+```
+
+Replay reviewed fixed/turret pairs through the supervisor to see whether the turret would track,
+aim-lock, and fire:
+
+```bash
+python scripts/replay_cat_algorithm_dataset.py \
+  --dataset data/reviewed_cat_training \
+  --config configs/app.example.yaml \
+  --zones configs/zones.yaml \
+  --aim-deadband-px 10
 ```
 
 ## Keyboard Controls

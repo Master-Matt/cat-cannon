@@ -65,7 +65,11 @@ class SupervisorStateMachine:
             self.state = SupervisorState.TURRET_ACQUIRE
 
         if self.state == SupervisorState.TURRET_ACQUIRE:
-            self.state = SupervisorState.TRACKING if inputs.target_visible else SupervisorState.TURRET_ACQUIRE
+            self.state = (
+                SupervisorState.TRACKING
+                if inputs.target_visible
+                else SupervisorState.TURRET_ACQUIRE
+            )
             return TransitionResult(self.state, fire_commanded=False)
 
         if self.state == SupervisorState.TRACKING:
@@ -76,6 +80,12 @@ class SupervisorStateMachine:
             return TransitionResult(self.state, fire_commanded=False)
 
         if self.state == SupervisorState.AIM_LOCK:
+            if not inputs.target_visible:
+                self.state = SupervisorState.TURRET_ACQUIRE
+                return TransitionResult(self.state, fire_commanded=False)
+            if not inputs.aim_locked:
+                self.state = SupervisorState.TRACKING
+                return TransitionResult(self.state, fire_commanded=False)
             self.state = SupervisorState.FIRE
             self._cooldown_remaining = self._cooldown_frames
             return TransitionResult(self.state, fire_commanded=True)
@@ -85,4 +95,3 @@ class SupervisorStateMachine:
             return TransitionResult(self.state, fire_commanded=False)
 
         return TransitionResult(self.state, fire_commanded=False)
-

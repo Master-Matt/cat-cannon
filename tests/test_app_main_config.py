@@ -59,8 +59,8 @@ vision:
   yolo_imgsz: 640
   yoloe_model: yoloe-11s-seg.pt
   yoloe_prompts:
-    person: people
-    cat: cats
+    person: person
+    cat: cat
 detection:
   cat_class: cat
   person_class: person
@@ -83,6 +83,42 @@ tracking:
     assert config.yolo_detector == "yoloe"
     assert config.yolo_model == "yoloe-11s-seg.pt"
     assert [(prompt.label, prompt.text) for prompt in config.yolo_prompts] == [
-        ("person", "people"),
-        ("cat", "cats"),
+        ("person", "person"),
+        ("cat", "cat"),
     ]
+
+
+def test_main_parses_cat_dataset_collection_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    dataset_dir = tmp_path / "dataset"
+    _write_app_config(config_path, yolo_imgsz=640)
+
+    config = parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--collect-cat-dataset",
+            "--dataset-dir",
+            str(dataset_dir),
+            "--dataset-sample-hz",
+            "2",
+        ]
+    )
+
+    assert config.collect_cat_dataset is True
+    assert config.dataset_dir == str(dataset_dir)
+    assert config.dataset_sample_hz == 2.0
+
+
+def test_eye_config_accepts_main_dataset_collection_options(tmp_path: Path) -> None:
+    from cat_cannon.app.eye_screen import EyeConfig
+
+    config = EyeConfig(
+        collect_cat_dataset=True,
+        dataset_dir=str(tmp_path / "dataset"),
+        dataset_sample_hz=2.0,
+    )
+
+    assert config.collect_cat_dataset is True
+    assert config.dataset_dir == str(tmp_path / "dataset")
+    assert config.dataset_sample_hz == 2.0

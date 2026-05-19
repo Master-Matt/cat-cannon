@@ -12,12 +12,15 @@ USB serial JSON protocol to the Jetson or laptop host.
 
 ## Expected Pins
 
-- `pan_servo_pin`
-- `tilt_servo_pin`
-- `solenoid_pin`
+- pan servo: GPIO0
+- tilt servo: GPIO1
+- solenoid/MOSFET signal: GPIO2
 - optional onboard `status_led_pin`
 
 Update `pico_config.py` before deployment if your wiring differs.
+
+The current `pico_config.py` is set for the D4184-style low-side MOSFET driver:
+GPIO2 idles low and pulses high for a bounded fire command.
 
 ## Included UF2
 
@@ -42,4 +45,10 @@ Official source:
 
 ```bash
 ./scripts/deploy_pico.sh
+```
+
+If the Pico is attached to the Jetson, run deployment from the Jetson and pass the current port:
+
+```bash
+./scripts/deploy_pico.sh --port /dev/ttyACM0
 ```

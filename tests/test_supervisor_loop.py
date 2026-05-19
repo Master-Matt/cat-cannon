@@ -51,8 +51,12 @@ def _person_detection() -> Detection:
 def test_supervisor_loop_returns_tracking_state_and_zone_after_confirmation() -> None:
     supervisor, controller = _supervisor()
 
-    first = supervisor.process_frame([_cat_detection()], frame_width=200, frame_height=200, armed=True)
-    second = supervisor.process_frame([_cat_detection()], frame_width=200, frame_height=200, armed=True)
+    first = supervisor.process_frame(
+        [_cat_detection()], frame_width=200, frame_height=200, armed=True
+    )
+    second = supervisor.process_frame(
+        [_cat_detection()], frame_width=200, frame_height=200, armed=True
+    )
 
     assert first.state == SupervisorState.IDLE
     assert first.counter_confirmed is False
@@ -98,8 +102,12 @@ def test_supervisor_loop_does_not_apply_tracking_delta_when_disarmed() -> None:
 def test_supervisor_does_not_fallback_track_while_disarmed_after_confirmation() -> None:
     supervisor, controller = _supervisor()
 
-    supervisor.process_frame([_cat_detection()], frame_width=200, frame_height=200, armed=False)
-    result = supervisor.process_frame([_cat_detection()], frame_width=200, frame_height=200, armed=False)
+    supervisor.process_frame(
+        [_cat_detection()], frame_width=200, frame_height=200, armed=False
+    )
+    result = supervisor.process_frame(
+        [_cat_detection()], frame_width=200, frame_height=200, armed=False
+    )
 
     assert result.counter_confirmed is True
     assert result.correction is None

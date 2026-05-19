@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from cat_cannon.adapters.interfaces import TurretController
-from cat_cannon.config import SystemConfig
+from cat_cannon.config import SystemConfig, scale_counter_zones
 from cat_cannon.domain.models import CounterZone, Detection, SupervisorState
 from cat_cannon.domain.safety import CounterConfirmation, DetectionPolicy, assess_scene
 from cat_cannon.domain.state_machine import SupervisorInputs, SupervisorStateMachine
@@ -38,7 +38,11 @@ class SupervisorLoop:
         self._filtered_pan = 0.0
         self._filtered_tilt = 0.0
 
-    def _find_turret_cat(self, turret_detections: list[Detection], policy: DetectionPolicy) -> Detection | None:
+    def _find_turret_cat(
+        self,
+        turret_detections: list[Detection],
+        policy: DetectionPolicy,
+    ) -> Detection | None:
         cats = [
             d for d in turret_detections
             if d.label == policy.cat_class
@@ -71,7 +75,6 @@ class SupervisorLoop:
         *,
         track_people: bool = False,
     ) -> Detection | None:
-        """Find best turret target for the active target class."""
         cat = self._find_turret_cat(turret_detections, policy)
         if cat is not None:
             return cat
@@ -86,10 +89,19 @@ class SupervisorLoop:
         pan_delta = max(-15.0, min(15.0, correction.pan_delta))
         tilt_delta = max(-15.0, min(15.0, correction.tilt_delta))
         # EMA filter
-        self._filtered_pan = tuning.ema_alpha * pan_delta + (1.0 - tuning.ema_alpha) * self._filtered_pan
-        self._filtered_tilt = tuning.ema_alpha * tilt_delta + (1.0 - tuning.ema_alpha) * self._filtered_tilt
+        self._filtered_pan = (
+            tuning.ema_alpha * pan_delta
+            + (1.0 - tuning.ema_alpha) * self._filtered_pan
+        )
+        self._filtered_tilt = (
+            tuning.ema_alpha * tilt_delta
+            + (1.0 - tuning.ema_alpha) * self._filtered_tilt
+        )
         # Apply gain, clamp pan to prevent overshoot
-        cmd_pan = max(-tuning.pan_clamp_deg, min(tuning.pan_clamp_deg, self._filtered_pan * tuning.gain))
+        cmd_pan = max(
+            -tuning.pan_clamp_deg,
+            min(tuning.pan_clamp_deg, self._filtered_pan * tuning.gain),
+        )
         cmd_tilt = self._filtered_tilt * tuning.gain
         if abs(cmd_pan) > tuning.deadband_deg or abs(cmd_tilt) > tuning.deadband_deg:
             self.controller.apply_tracking_delta(cmd_pan, cmd_tilt)
@@ -108,7 +120,12 @@ class SupervisorLoop:
     ) -> SupervisorStepResult:
         policy = detection_policy_override or self.config.detection_policy
         # Fixed camera: zone intersection + counter confirmation + human presence
-        assessment = assess_scene(detections=detections, zones=self.zones, policy=policy)
+        fixed_frame_zones = scale_counter_zones(
+            self.zones,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+        assessment = assess_scene(detections=detections, zones=fixed_frame_zones, policy=policy)
         turret_human_present = False
         if turret_detections is not None:
             turret_human_present = self._find_turret_person(turret_detections, policy) is not None
@@ -186,6 +203,8 @@ class SupervisorLoop:
             target_visible=target_visible,
             aim_locked=aim_locked,
             active_zone_id=assessment.active_zone_id,
-            candidate_track_id=assessment.candidate_cat.track_id if assessment.candidate_cat else None,
+            candidate_track_id=(
+                assessment.candidate_cat.track_id if assessment.candidate_cat else None
+            ),
             correction=correction,
         )

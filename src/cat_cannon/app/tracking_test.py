@@ -17,12 +17,14 @@ from cat_cannon.adapters.ultralytics_yolo import (
 )
 from cat_cannon.app.controller_session import ControllerSession
 from cat_cannon.app.supervisor import SupervisorLoop, SupervisorStepResult
+from cat_cannon.app.yolo_dataset import CatDatasetRecorder
 from cat_cannon.config import (
     DEFAULT_YOLOE_PROMPTS,
     YoloPrompt,
     load_counter_zones,
     load_system_config,
     load_vision_config,
+    scale_counter_zones,
 )
 from cat_cannon.domain.models import CounterZone, Detection
 from cat_cannon.domain.safety import DetectionPolicy
@@ -74,6 +76,9 @@ class TrackingTestConfig:
     window_height: int = 720
     panel_width: int = 280
     fullscreen: bool = False
+    collect_cat_dataset: bool = False
+    dataset_dir: str = "data/cat_training"
+    dataset_sample_hz: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -608,6 +613,13 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
         action="store_true",
         help="Disable 180° rotation of the turret camera",
     )
+    parser.add_argument(
+        "--collect-cat-dataset",
+        action="store_true",
+        help="Save raw cat-detection frames and YOLO labels for training",
+    )
+    parser.add_argument("--dataset-dir", default="data/cat_training")
+    parser.add_argument("--dataset-sample-hz", type=float, default=1.0)
     args = parser.parse_args(argv)
 
     def _parse_camera(value: str) -> int | str:
@@ -652,6 +664,9 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
         window_height=args.window_height,
         panel_width=args.panel_width,
         fullscreen=bool(args.fullscreen),
+        collect_cat_dataset=bool(args.collect_cat_dataset),
+        dataset_dir=args.dataset_dir,
+        dataset_sample_hz=args.dataset_sample_hz,
     )
 
 
@@ -970,7 +985,8 @@ def _draw_detections(cv2, frame, detections: list[Detection]):
 
 
 def _draw_zones(cv2, frame, zones: list[CounterZone]):
-    for zone in zones:
+    height, width = frame.shape[:2]
+    for zone in scale_counter_zones(zones, frame_width=width, frame_height=height):
         points = [(int(point.x), int(point.y)) for point in zone.polygon]
         if len(points) < 2:
             continue
@@ -1219,12 +1235,22 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
     state = TrackingTestState(armed=config.arm_on_start, step_deg=config.step_deg)
     buttons = _build_buttons(config)
     trace_log = TraceLog()
+    dataset_recorder = (
+        CatDatasetRecorder(
+            root=config.dataset_dir,
+            sample_interval_s=1.0 / max(0.001, config.dataset_sample_hz),
+        )
+        if config.collect_cat_dataset
+        else None
+    )
     should_exit = False
     next_screen: ScreenName | None = None
     trace_log.add(
         f"starting fixed={config.fixed_camera} {config.fixed_camera_width}x{config.fixed_camera_height} "
         f"turret={config.turret_camera} {config.turret_camera_width}x{config.turret_camera_height}"
     )
+    if dataset_recorder is not None:
+        trace_log.add(f"cat dataset collection -> {dataset_recorder.root}")
 
     def apply_control(control: str, *, source: str) -> None:
         nonlocal state, status_message, should_exit, next_screen
@@ -1307,8 +1333,10 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 )
 
             # Fixed camera: detect at interval (zone confirmation only)
+            fixed_detection_updated = False
             if camera_detections is None or frame_counter % config.detect_interval == 0:
                 fixed_perception = detector.detect(fixed_frame, source_id="fixed")
+                fixed_detection_updated = True
             else:
                 fixed_perception = camera_detections.fixed
 
@@ -1317,6 +1345,34 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 turret_perception_frame = detector.detect(turret_frame, source_id="turret")
             else:
                 turret_perception_frame = None
+
+            if dataset_recorder is not None:
+                if fixed_detection_updated:
+                    sample = dataset_recorder.maybe_record(
+                        cv2=cv2,
+                        source_id="fixed",
+                        frame=fixed_frame,
+                        detections=fixed_perception.detections,
+                        policy=system_config.detection_policy,
+                    )
+                    if sample is not None:
+                        trace_log.add(
+                            f"dataset fixed saved {sample.image_path.name} "
+                            f"cats={sample.detection_count}"
+                        )
+                if turret_perception_frame is not None and turret_frame is not None:
+                    sample = dataset_recorder.maybe_record(
+                        cv2=cv2,
+                        source_id="turret",
+                        frame=turret_frame,
+                        detections=turret_perception_frame.detections,
+                        policy=system_config.detection_policy,
+                    )
+                    if sample is not None:
+                        trace_log.add(
+                            f"dataset turret saved {sample.image_path.name} "
+                            f"cats={sample.detection_count}"
+                        )
 
             camera_detections = TrackingCameraDetections(
                 fixed=fixed_perception,
@@ -1440,6 +1496,10 @@ def run_tracking_test_with_navigation(config: TrackingTestConfig) -> None:
                     window_height=config.window_height,
                     fullscreen=config.fullscreen,
                     live_controller=config.live_controller,
+                    arm_on_start=config.arm_on_start,
+                    collect_cat_dataset=config.collect_cat_dataset,
+                    dataset_dir=config.dataset_dir,
+                    dataset_sample_hz=config.dataset_sample_hz,
                 )
             )
             continue

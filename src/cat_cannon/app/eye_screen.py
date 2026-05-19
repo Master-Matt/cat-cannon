@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -53,6 +52,9 @@ class EyeConfig:
     fullscreen: bool = True
     live_controller: bool = True
     arm_on_start: bool = False
+    collect_cat_dataset: bool = False
+    dataset_dir: str = "data/cat_training"
+    dataset_sample_hz: float = 1.0
 
 
 @dataclass
@@ -318,7 +320,10 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         if config.live_controller:
             try:
                 ctrl = RP2040SerialController.open(port=config.port, baudrate=config.baudrate)
-                session = ControllerSession(controller=ctrl, servo_limits=system_config.servo_limits)
+                session = ControllerSession(
+                    controller=ctrl,
+                    servo_limits=system_config.servo_limits,
+                )
                 session.start()
                 controller = ctrl
             except Exception:
@@ -362,12 +367,9 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
 
     # These get set once background loading completes
     system_config = None
-    zones: list = []
     fixed_camera = None
     turret_camera = None
     controller = None
-    detector = None
-    supervisor = None
 
     # Shared state between detection thread and main loop (protected by lock)
     _detect_lock = threading.Lock()
@@ -403,8 +405,16 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     last_fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
 
             fixed_detections = last_fixed_perception.detections if last_fixed_perception else []
-            fixed_width = last_fixed_perception.width if last_fixed_perception else config.fixed_camera_width
-            fixed_height = last_fixed_perception.height if last_fixed_perception else config.fixed_camera_height
+            fixed_width = (
+                last_fixed_perception.width
+                if last_fixed_perception
+                else config.fixed_camera_width
+            )
+            fixed_height = (
+                last_fixed_perception.height
+                if last_fixed_perception
+                else config.fixed_camera_height
+            )
 
             # Turret camera: detect every frame for responsive tracking
             turret_detections = None
@@ -434,10 +444,16 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             gaze = None
             if turret_perception is not None and turret_detections and _sys_config is not None:
                 policy = _sys_config.detection_policy
-                cats = [d for d in turret_detections
-                        if d.label == policy.cat_class and d.confidence >= policy.cat_confidence_threshold]
-                people = [d for d in turret_detections
-                          if d.label == policy.person_class and d.confidence >= policy.person_confidence_threshold]
+                cats = [
+                    d for d in turret_detections
+                    if d.label == policy.cat_class
+                    and d.confidence >= policy.cat_confidence_threshold
+                ]
+                people = [
+                    d for d in turret_detections
+                    if d.label == policy.person_class
+                    and d.confidence >= policy.person_confidence_threshold
+                ]
                 gaze_target = None
                 if cats:
                     gaze_target = max(cats, key=lambda d: d.bbox.width * d.bbox.height)
@@ -468,12 +484,9 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             # --- Pick up background resources once ready ---
             if _bg_done.is_set() and system_config is None:
                 system_config = _bg_resources.get("system_config")
-                zones = _bg_resources.get("zones", [])
                 fixed_camera = _bg_resources.get("fixed_camera")
                 turret_camera = _bg_resources.get("turret_camera")
                 controller = _bg_resources.get("controller")
-                detector = _bg_resources.get("detector")
-                supervisor = _bg_resources.get("supervisor")
 
             # --- Read latest detection results (non-blocking) ---
             step_result = None
@@ -564,6 +577,15 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 next_screen = "zone_calibration"
             elif key == ord("a"):
                 state.armed = not state.armed
+                _session = _bg_resources.get("session")
+                if _session is not None:
+                    try:
+                        if state.armed:
+                            _session.enable()
+                        else:
+                            _session.disable()
+                    except Exception:
+                        pass
 
     except KeyboardInterrupt:
         pass

@@ -178,6 +178,10 @@ def test_yoloe_detector_sets_prompt_classes(monkeypatch) -> None:
             calls["classes"] = classes
 
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLOE=FakeYOLOE))
+    monkeypatch.setattr(
+        "cat_cannon.adapters.ultralytics_yolo._promptable_model_path",
+        lambda configured_model: configured_model,
+    )
 
     UltralyticsYoloDetector.open(
         policy=_policy(),
@@ -185,11 +189,11 @@ def test_yoloe_detector_sets_prompt_classes(monkeypatch) -> None:
             detector="yoloe",
             model_path="yoloe-11s-seg.pt",
             prompts=(
-                YoloPrompt(label="person", text="people"),
-                YoloPrompt(label="cat", text="cats"),
+                YoloPrompt(label="person", text="person"),
+                YoloPrompt(label="cat", text="cat"),
             ),
         ),
     )
 
     assert calls["model_path"] == "yoloe-11s-seg.pt"
-    assert calls["classes"] == ["people", "cats"]
+    assert calls["classes"] == ["person", "cat"]

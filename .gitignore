@@ -9,5 +9,6 @@ src/cat_cannon.egg-info/
 yolo11*.pt
 *.onnx
 *.engine
+data/
 # Runtime configs (user-edited, seeded from .example.yaml)
 configs/app.yaml

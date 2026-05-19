@@ -34,7 +34,11 @@ Reasons:
 - `set_enabled`
 - `set_angles`
 - `apply_delta`
+- `set_servo_limits`
+- `set_velocity`
+- `relax`
 - `safe_stop`
+- `set_fire_output`
 - `fire`
 
 ## Safety Behavior
@@ -43,3 +47,17 @@ Reasons:
 - watchdog timeout disables actuation if host heartbeats stop
 - `safe_stop` always drops the solenoid output immediately
 - servo motion is clamped to configured angle limits
+- guided limits from the tracking screen are sent to the Pico before live movement
+- `set_fire_output` exists for bench debugging; normal operation should use bounded `fire` pulses
+
+## Current Pico Pin Assumptions
+
+`firmware/pico/pico_config.py` is the source of truth for board wiring:
+
+- pan servo: GPIO0
+- tilt servo: GPIO1
+- solenoid/MOSFET signal: GPIO2
+- solenoid output mode: active high for the current D4184-style low-side MOSFET module
+
+The Pico should be redeployed from the host it is attached to. In the current Jetson setup, that
+means running `./scripts/deploy_pico.sh --port /dev/ttyACM0` on the Jetson.

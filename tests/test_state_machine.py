@@ -59,6 +59,52 @@ def test_state_machine_advances_to_fire_then_cooldown() -> None:
     assert cooldown.state == SupervisorState.COOLDOWN
 
 
+def test_state_machine_does_not_fire_if_aim_lock_is_lost_before_fire() -> None:
+    machine = SupervisorStateMachine(cooldown_frames=2)
+
+    machine.advance(
+        SupervisorInputs(
+            armed=True,
+            human_present=False,
+            counter_confirmed=True,
+            target_visible=False,
+            aim_locked=False,
+        )
+    )
+    machine.advance(
+        SupervisorInputs(
+            armed=True,
+            human_present=False,
+            counter_confirmed=True,
+            target_visible=True,
+            aim_locked=False,
+        )
+    )
+    aim_lock = machine.advance(
+        SupervisorInputs(
+            armed=True,
+            human_present=False,
+            counter_confirmed=True,
+            target_visible=True,
+            aim_locked=True,
+        )
+    )
+    assert aim_lock.state == SupervisorState.AIM_LOCK
+
+    lost_lock = machine.advance(
+        SupervisorInputs(
+            armed=True,
+            human_present=False,
+            counter_confirmed=True,
+            target_visible=True,
+            aim_locked=False,
+        )
+    )
+
+    assert lost_lock.fire_commanded is False
+    assert lost_lock.state == SupervisorState.TRACKING
+
+
 def test_state_machine_enters_human_lockout_immediately() -> None:
     machine = SupervisorStateMachine(cooldown_frames=5)
 
@@ -74,4 +120,3 @@ def test_state_machine_enters_human_lockout_immediately() -> None:
 
     assert result.state == SupervisorState.HUMAN_LOCKOUT
     assert result.fire_commanded is False
-

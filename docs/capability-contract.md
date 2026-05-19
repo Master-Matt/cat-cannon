@@ -14,7 +14,7 @@ tracks the cat with a pan/tilt turret, and conditionally triggers a bounded dete
 
 ## Safety Invariants
 
-- If a person is visible on the fixed camera, the system must not fire.
+- If a person is visible on either camera, the system must not fire.
 - If the system is not armed, the system must not fire.
 - If counter confirmation is lost, the system must return to a non-firing state.
 - If any fault condition is raised by perception, control, or orchestration, the system must enter
@@ -24,9 +24,12 @@ tracks the cat with a pan/tilt turret, and conditionally triggers a bounded dete
 ## Counter Qualification
 
 - Counter presence is modeled as calibrated polygons in the fixed camera image plane.
+- Zone files store a reference frame and normalized points so calibration survives resolution
+  changes.
 - A cat is considered on-counter when the cat footpoint lies within a counter polygon.
 - A fireable target requires repeated positive confirmation across consecutive frames for the same
   tracked cat.
+- Fine targeting uses the turret camera when available; fixed-camera targeting is only a fallback.
 
 ## Supervisor States
 
@@ -55,4 +58,5 @@ tracks the cat with a pan/tilt turret, and conditionally triggers a bounded dete
   - human lockout
   - aim acquisition
   - cooldown behavior
-
+- Reviewed fixed/turret YOLO datasets should be replayable through the dry-run supervisor to
+  confirm whether tracking, aim lock, and fire decisions match expectations before live testing.

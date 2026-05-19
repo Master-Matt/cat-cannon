@@ -135,6 +135,7 @@ def build_rsync_command(
         "*.pyc",
         "*.engine*",
         "everything-claude-code/",
+        "data/",
         # Preserve user-edited configs on the remote
         "configs/zones.yaml",
         "configs/app.yaml",

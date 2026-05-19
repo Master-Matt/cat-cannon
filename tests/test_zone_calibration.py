@@ -6,7 +6,7 @@ from cat_cannon.app.zone_calibration import (
     ZoneCalibrationSession,
     map_display_to_frame,
 )
-from cat_cannon.config import load_counter_zones, save_counter_zones
+from cat_cannon.config import load_counter_zones, save_counter_zones, scale_counter_zones
 from cat_cannon.domain.models import CounterZone, Point
 
 
@@ -101,6 +101,40 @@ def test_save_counter_zones_round_trips_yaml(tmp_path: Path) -> None:
     loaded = load_counter_zones(path)
 
     assert loaded == zones
+
+
+def test_saved_counter_zones_scale_to_new_frame_size(tmp_path: Path) -> None:
+    path = tmp_path / "zones.yaml"
+    zones = [
+        CounterZone(
+            zone_id="kitchen-island",
+            polygon=(
+                Point(100.0, 200.0),
+                Point(300.0, 200.0),
+                Point(300.0, 400.0),
+                Point(100.0, 400.0),
+            ),
+        )
+    ]
+
+    save_counter_zones(path, zones, frame_width=640, frame_height=480)
+    loaded = load_counter_zones(path)
+    scaled = scale_counter_zones(loaded, frame_width=1280, frame_height=720)
+
+    assert scaled == [
+        CounterZone(
+            zone_id="kitchen-island",
+            polygon=(
+                Point(200.0, 300.0),
+                Point(600.0, 300.0),
+                Point(600.0, 600.0),
+                Point(200.0, 600.0),
+            ),
+        )
+    ]
+    saved = path.read_text(encoding="utf-8")
+    assert "frame:" in saved
+    assert "normalized_points:" in saved
 
 
 def test_preview_padding_is_non_negative_for_1024x600_touch_layout() -> None:

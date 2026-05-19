@@ -14,7 +14,13 @@ from cat_cannon.adapters.ultralytics_yolo import (
 )
 from cat_cannon.app.controller_session import ControllerSession
 from cat_cannon.app.supervisor import SupervisorLoop, SupervisorStepResult
-from cat_cannon.config import YoloPrompt, load_counter_zones, load_system_config, load_vision_config
+from cat_cannon.config import (
+    YoloPrompt,
+    load_counter_zones,
+    load_system_config,
+    load_vision_config,
+    scale_counter_zones,
+)
 
 
 def _require_cv2():
@@ -142,7 +148,8 @@ def _draw_detections(cv2, frame, detections):
 
 
 def _draw_zones(cv2, frame, zones):
-    for zone in zones:
+    height, width = frame.shape[:2]
+    for zone in scale_counter_zones(zones, frame_width=width, frame_height=height):
         points = [(int(point.x), int(point.y)) for point in zone.polygon]
         if len(points) < 2:
             continue

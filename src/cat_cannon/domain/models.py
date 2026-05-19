@@ -38,6 +38,8 @@ class Detection:
 class CounterZone:
     zone_id: str
     polygon: tuple[Point, ...]
+    reference_width: float | None = None
+    reference_height: float | None = None
 
 
 class SupervisorState(str, Enum):
@@ -51,4 +53,3 @@ class SupervisorState(str, Enum):
     FIRE = "fire"
     COOLDOWN = "cooldown"
     FAULT = "fault"
-

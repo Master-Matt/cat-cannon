@@ -9,11 +9,11 @@ from cat_cannon.config import (
 )
 
 
-def test_example_config_uses_tight_pixel_deadband_for_small_cat_boxes() -> None:
+def test_example_config_uses_ten_pixel_aim_lock_deadband() -> None:
     config = load_system_config("configs/app.example.yaml")
 
-    assert config.tracking_calibration.horizontal_deadband_px == 5
-    assert config.tracking_calibration.vertical_deadband_px == 5
+    assert config.tracking_calibration.horizontal_deadband_px == 10
+    assert config.tracking_calibration.vertical_deadband_px == 10
     assert config.tracking_calibration.aim_offset_x_px == 0
     assert config.tracking_calibration.aim_offset_y_px == 20
 
@@ -35,8 +35,8 @@ def test_example_config_exposes_yolo_runtime_image_size() -> None:
     assert config.vision.yolo_model == ""
     assert config.vision.yoloe_model == "yoloe-11s-seg.pt"
     assert [(prompt.label, prompt.text) for prompt in config.vision.yoloe_prompts] == [
-        ("person", "people"),
-        ("cat", "cats"),
+        ("person", "person"),
+        ("cat", "cat"),
     ]
 
 
@@ -83,9 +83,9 @@ vision:
   yolo_model: custom-standard.pt
   yoloe_model: yoloe-11s-seg.pt
   yoloe_prompts:
-    person: people
+    person: person
     cat:
-      - cats
+      - cat
       - kitten
 detection:
   cat_class: cat
@@ -110,10 +110,10 @@ tracking:
     assert config.vision.yolo_imgsz == 704
     assert config.vision.selected_model_path == "yoloe-11s-seg.pt"
     assert config.vision.yolo_model == "custom-standard.pt"
-    assert config.vision.prompt_texts == ("people", "cats", "kitten")
+    assert config.vision.prompt_texts == ("person", "cat", "kitten")
     assert config.vision.prompt_label_aliases == {
-        "people": "person",
-        "cats": "cat",
+        "person": "person",
+        "cat": "cat",
         "kitten": "cat",
     }
 
@@ -191,7 +191,9 @@ tracking:
     assert reloaded.servo_limits.pan_max_deg == 120
 
 
-def test_save_servo_limit_calibration_preserves_camera_pov_and_derives_orientation(tmp_path: Path) -> None:
+def test_save_servo_limit_calibration_preserves_camera_pov_and_derives_orientation(
+    tmp_path: Path,
+) -> None:
     config_path = tmp_path / "app.yaml"
     config_path.write_text(
         """

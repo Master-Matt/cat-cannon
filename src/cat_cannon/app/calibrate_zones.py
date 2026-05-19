@@ -23,6 +23,7 @@ from cat_cannon.config import (
     load_system_config,
     load_vision_config,
     save_counter_zones,
+    scale_counter_zones,
 )
 from cat_cannon.domain.models import Detection
 
@@ -209,7 +210,7 @@ def _draw_button(cv2, canvas, button: UiButton) -> None:
 def _draw_zones(cv2, canvas, zones, layout: CalibrationLayout, frame_width: int, frame_height: int) -> None:
     scale_x = layout.preview_width / frame_width
     scale_y = layout.preview_height / frame_height
-    for zone in zones:
+    for zone in scale_counter_zones(zones, frame_width=frame_width, frame_height=frame_height):
         points = [
             (
                 int(layout.preview_offset_x + point.x * scale_x),
@@ -405,6 +406,16 @@ def _render_ui(
     return canvas
 
 
+def _save_zones_for_frame(output_path: Path, zones, frame) -> None:
+    frame_height, frame_width = frame.shape[:2]
+    save_counter_zones(
+        output_path,
+        zones,
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+
+
 def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
     cv2 = _require_cv2()
     output_path = Path(config.output_path)
@@ -467,7 +478,7 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
                     next_screen = "eye"
                     should_exit = True
                 elif button.key == "save":
-                    save_counter_zones(output_path, session.zones)
+                    _save_zones_for_frame(output_path, session.zones, latest_frame)
                     status_message = f"Saved {len(session.zones)} zones to {output_path}"
                 elif button.key == "undo":
                     session.undo()
@@ -569,7 +580,7 @@ def run_calibration_screen(config: CalibrationConfig) -> ScreenName | None:
                 next_screen = "eye"
                 break
             if key == ord("s"):
-                save_counter_zones(output_path, session.zones)
+                _save_zones_for_frame(output_path, session.zones, latest_frame)
                 status_message = f"Saved {len(session.zones)} zones to {output_path}"
             elif key == ord("u"):
                 session.undo()

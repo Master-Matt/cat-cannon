@@ -150,6 +150,52 @@ def test_tracking_control_blocks_fire_until_armed() -> None:
     assert "arm first" in result.message
 
 
+def test_tracking_test_parses_cat_dataset_collection_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(
+        """
+system:
+  arm_required: true
+  cooldown_frames: 10
+vision:
+  yolo_imgsz: 640
+detection:
+  cat_class: cat
+  person_class: person
+  cat_confidence_threshold: 0.45
+  person_confidence_threshold: 0.55
+  consecutive_counter_frames: 3
+tracking:
+  horizontal_deadband_px: 5
+  vertical_deadband_px: 5
+  horizontal_gain: 0.03
+  vertical_gain: 0.03
+  aim_offset_x_px: 0
+  aim_offset_y_px: 20
+""",
+        encoding="utf-8",
+    )
+    dataset_dir = tmp_path / "dataset"
+
+    from cat_cannon.app.tracking_test import parse_args
+
+    config = parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--collect-cat-dataset",
+            "--dataset-dir",
+            str(dataset_dir),
+            "--dataset-sample-hz",
+            "2",
+        ]
+    )
+
+    assert config.collect_cat_dataset is True
+    assert config.dataset_dir == str(dataset_dir)
+    assert config.dataset_sample_hz == 2.0
+
+
 def test_tracking_test_state_defaults_human_tracking_off() -> None:
     state = TrackingTestState(armed=True, step_deg=5.0)
 

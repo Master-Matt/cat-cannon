@@ -1,0 +1,17 @@
+# Runtime and generated data
+data/
+graphify-out/converted/
+
+# Local environments and caches
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.egg-info/
+
+# Vendored tooling and large model artifacts
+everything-claude-code/
+*.pt
+*.onnx
+*.engine
+*.uf2

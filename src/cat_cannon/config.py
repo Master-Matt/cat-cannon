@@ -20,8 +20,8 @@ class YoloPrompt:
 
 
 DEFAULT_YOLOE_PROMPTS: tuple[YoloPrompt, ...] = (
-    YoloPrompt(label="person", text="people"),
-    YoloPrompt(label="cat", text="cats"),
+    YoloPrompt(label="person", text="person"),
+    YoloPrompt(label="cat", text="cat"),
 )
 
 
@@ -146,9 +146,9 @@ def load_system_config(path: str | Path) -> SystemConfig:
             servo_center_tilt_deg=float(tracking.get("servo_center_tilt_deg", 0)),
         ),
         tracking_tuning=TrackingTuning(
-            ema_alpha=float(tuning.get("ema_alpha", 0.5)),
-            gain=float(tuning.get("gain", 0.7)),
-            pan_clamp_deg=float(tuning.get("pan_clamp_deg", 4.0)),
+            ema_alpha=float(tuning.get("ema_alpha", 0.35)),
+            gain=float(tuning.get("gain", 0.5)),
+            pan_clamp_deg=float(tuning.get("pan_clamp_deg", 3.0)),
             deadband_deg=float(tuning.get("deadband_deg", 0.3)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
         ),
@@ -166,44 +166,99 @@ def load_vision_config(path: str | Path) -> VisionConfig:
 
 def load_counter_zones(path: str | Path) -> list[CounterZone]:
     raw = _load_yaml(path)
+    root_frame = _frame_size(raw.get("frame"))
     zones: list[CounterZone] = []
     for zone in raw["zones"]:
+        zone_frame = _frame_size(zone.get("frame"))
+        if zone_frame == (None, None):
+            zone_frame = root_frame
+        reference_width, reference_height = zone_frame
+        if "normalized_points" in zone:
+            if reference_width is None or reference_height is None:
+                raise ValueError("normalized counter zones require frame width and height")
+            points = tuple(
+                Point(float(x) * reference_width, float(y) * reference_height)
+                for x, y in zone["normalized_points"]
+            )
+        else:
+            points = tuple(Point(float(x), float(y)) for x, y in zone["points"])
         zones.append(
             CounterZone(
                 zone_id=str(zone["id"]),
-                polygon=tuple(Point(float(x), float(y)) for x, y in zone["points"]),
+                polygon=points,
+                reference_width=reference_width,
+                reference_height=reference_height,
             )
         )
     return zones
 
 
-def save_counter_zones(path: str | Path, zones: list[CounterZone]) -> None:
-    payload = {
-        "zones": [
-            {
-                "id": zone.zone_id,
-                "points": [[point.x, point.y] for point in zone.polygon],
-            }
-            for zone in zones
-        ]
-    }
+def save_counter_zones(
+    path: str | Path,
+    zones: list[CounterZone],
+    *,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
+) -> None:
+    payload: dict[str, object] = {"zones": []}
+    if frame_width is not None and frame_height is not None:
+        payload["frame"] = {"width": int(frame_width), "height": int(frame_height)}
+
+    serialized_zones: list[dict[str, object]] = []
+    for zone in zones:
+        zone_payload: dict[str, object] = {
+            "id": zone.zone_id,
+            "points": [[point.x, point.y] for point in zone.polygon],
+        }
+        reference_width = frame_width or zone.reference_width
+        reference_height = frame_height or zone.reference_height
+        if reference_width is not None and reference_height is not None:
+            zone_payload["normalized_points"] = [
+                [point.x / reference_width, point.y / reference_height]
+                for point in zone.polygon
+            ]
+        serialized_zones.append(zone_payload)
+    payload["zones"] = serialized_zones
+
     with Path(path).open("w", encoding="utf-8") as handle:
         yaml.safe_dump(payload, handle, sort_keys=False)
 
 
+def scale_counter_zones(
+    zones: list[CounterZone],
+    *,
+    frame_width: int,
+    frame_height: int,
+) -> list[CounterZone]:
+    scaled: list[CounterZone] = []
+    for zone in zones:
+        if not zone.reference_width or not zone.reference_height:
+            scaled.append(CounterZone(zone_id=zone.zone_id, polygon=zone.polygon))
+            continue
+        scale_x = frame_width / zone.reference_width
+        scale_y = frame_height / zone.reference_height
+        scaled.append(
+            CounterZone(
+                zone_id=zone.zone_id,
+                polygon=tuple(
+                    Point(point.x * scale_x, point.y * scale_y)
+                    for point in zone.polygon
+                ),
+            )
+        )
+    return scaled
+
+
 def save_servo_center(path: str | Path, pan_deg: float, tilt_deg: float) -> None:
-    """Update the servo center in the app config YAML without rewriting the whole file."""
     raw = _load_yaml(path)
-    if "tracking" not in raw:
-        raw["tracking"] = {}
-    raw["tracking"]["servo_center_pan_deg"] = round(pan_deg, 2)
-    raw["tracking"]["servo_center_tilt_deg"] = round(tilt_deg, 2)
+    tracking = raw.setdefault("tracking", {})
+    tracking["servo_center_pan_deg"] = round(pan_deg, 2)
+    tracking["servo_center_tilt_deg"] = round(tilt_deg, 2)
     with Path(path).open("w", encoding="utf-8") as handle:
         yaml.safe_dump(raw, handle, sort_keys=False)
 
 
 def save_servo_limit(path: str | Path, key: str, angle_deg: float) -> ServoLimits:
-    """Update one servo limit in app config and return normalized limits."""
     valid_keys = {
         "servo_min_pan_deg",
         "servo_max_pan_deg",
@@ -216,16 +271,7 @@ def save_servo_limit(path: str | Path, key: str, angle_deg: float) -> ServoLimit
     raw = _load_yaml(path)
     tracking = raw.setdefault("tracking", {})
     tracking[key] = round(float(angle_deg), 2)
-    limits = ServoLimits(
-        pan_min_deg=float(tracking.get("servo_min_pan_deg", 0.0)),
-        pan_max_deg=float(tracking.get("servo_max_pan_deg", 180.0)),
-        tilt_min_deg=float(tracking.get("servo_min_tilt_deg", 30.0)),
-        tilt_max_deg=float(tracking.get("servo_max_tilt_deg", 150.0)),
-        pan_left_deg=_optional_float(tracking.get("servo_left_pan_deg")),
-        pan_right_deg=_optional_float(tracking.get("servo_right_pan_deg")),
-        tilt_top_deg=_optional_float(tracking.get("servo_top_tilt_deg")),
-        tilt_bottom_deg=_optional_float(tracking.get("servo_bottom_tilt_deg")),
-    ).normalized()
+    limits = _servo_limits_from_tracking(tracking)
     tracking["servo_min_pan_deg"] = limits.pan_min_deg
     tracking["servo_max_pan_deg"] = limits.pan_max_deg
     tracking["servo_min_tilt_deg"] = limits.tilt_min_deg
@@ -243,7 +289,6 @@ def save_servo_limit_calibration(
     left_pan_deg: float,
     right_pan_deg: float,
 ) -> ServoLimits:
-    """Persist camera-POV limit points and derived servo min/max bounds."""
     raw = _load_yaml(path)
     tracking = raw.setdefault("tracking", {})
     tracking["servo_top_tilt_deg"] = round(float(top_tilt_deg), 2)
@@ -271,7 +316,6 @@ def save_servo_limit_calibration(
 
 
 def clear_servo_limits(path: str | Path) -> ServoLimits:
-    """Remove saved servo motion limits and return the default safe range."""
     raw = _load_yaml(path)
     tracking = raw.setdefault("tracking", {})
     _remove_servo_limit_keys(tracking)
@@ -282,7 +326,6 @@ def clear_servo_limits(path: str | Path) -> ServoLimits:
 
 
 def clear_servo_calibration(path: str | Path) -> ServoLimits:
-    """Remove saved servo motion limits and center offsets."""
     raw = _load_yaml(path)
     tracking = raw.setdefault("tracking", {})
     _remove_servo_limit_keys(tracking)
@@ -379,7 +422,32 @@ def _parse_yoloe_prompts(raw_prompts: object) -> tuple[YoloPrompt, ...]:
     return tuple(prompts)
 
 
+def _servo_limits_from_tracking(tracking: dict) -> ServoLimits:
+    return ServoLimits(
+        pan_min_deg=float(tracking.get("servo_min_pan_deg", 0.0)),
+        pan_max_deg=float(tracking.get("servo_max_pan_deg", 180.0)),
+        tilt_min_deg=float(tracking.get("servo_min_tilt_deg", 30.0)),
+        tilt_max_deg=float(tracking.get("servo_max_tilt_deg", 150.0)),
+        pan_left_deg=_optional_float(tracking.get("servo_left_pan_deg")),
+        pan_right_deg=_optional_float(tracking.get("servo_right_pan_deg")),
+        tilt_top_deg=_optional_float(tracking.get("servo_top_tilt_deg")),
+        tilt_bottom_deg=_optional_float(tracking.get("servo_bottom_tilt_deg")),
+    ).normalized()
+
+
 def _optional_float(value) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _frame_size(raw_frame: object) -> tuple[float | None, float | None]:
+    if raw_frame is None:
+        return None, None
+    if not isinstance(raw_frame, dict):
+        raise ValueError("counter zone frame must be a mapping")
+    width = raw_frame.get("width")
+    height = raw_frame.get("height")
+    if width is None or height is None:
+        return None, None
+    return float(width), float(height)

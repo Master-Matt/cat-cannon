@@ -11,14 +11,17 @@ This repository currently contains the application core:
 - domain models for detections, zones, and targeting
 - scene safety and counter-zone reasoning
 - a supervisor state machine for arming, lockout, tracking, and cooldown
-- adapter boundaries for DeepStream and actuation hardware
-- tests for the decision logic
+- configurable Ultralytics YOLO/YOLOE perception adapters
+- OpenCV operator screens for the eye view, zone calibration, and tracking/teleop
+- dataset capture, fine-tuning dataset preparation, and algorithm replay tooling
+- adapter boundaries for cameras and RP2040 actuation hardware
+- tests for the decision logic and operator workflows
 
 ## Current Assumptions
 
 - v1 target stack is JetPack 6.1 GA with DeepStream 7.1
 - counter presence is modeled with calibrated polygons, not segmentation
-- people in frame always disable actuation
+- people in either camera frame always disable actuation
 - servo PWM and solenoid pulses are delegated to an external controller
 
 ## Project Layout
@@ -50,19 +53,25 @@ For laptop webcam detection tests with YOLO11:
 pip install -e ".[dev,bench,vision]"
 ```
 
+For offline dataset augmentation:
+
+```bash
+pip install -e ".[dev,bench,vision,training]"
+```
+
 ## Laptop Bench Test
 
 Once a Raspberry Pi Pico is flashed with the firmware in `firmware/pico/`, you can run a local
 bench test from a laptop with one or two USB webcams:
 
 ```bash
-./scripts/bench.sh --port /dev/ttyACM1 --camera 0
+./scripts/bench.sh --port /dev/ttyACM0 --camera 0
 ```
 
 Optional second camera:
 
 ```bash
-./scripts/bench.sh --port /dev/ttyACM1 --camera 0 --secondary-camera 1
+./scripts/bench.sh --port /dev/ttyACM0 --camera 0 --secondary-camera 1
 ```
 
 If the Pico is the only matching serial device, you can omit `--port`.
@@ -70,19 +79,19 @@ If the Pico is the only matching serial device, you can omit `--port`.
 Quick controller smoke test:
 
 ```bash
-./scripts/smoke_test.sh --port /dev/ttyACM1 --dry-fire
+./scripts/smoke_test.sh --port /dev/ttyACM0 --dry-fire
 ```
 
 Keyboard teleop over an SSH session to the Jetson:
 
 ```bash
-./scripts/run_teleop.sh --port /dev/ttyACM1
+./scripts/run_teleop.sh --port /dev/ttyACM0
 ```
 
 YOLO11 detection overlay on the primary camera:
 
 ```bash
-./scripts/bench.sh --port /dev/ttyACM1 --camera 0 --detect --yolo-model yolo11n.pt
+./scripts/bench.sh --port /dev/ttyACM0 --camera 0 --detect --yolo-model yolo11n.pt
 ```
 
 If the Pico is in `BOOTSEL` mode, flash MicroPython first:
@@ -114,6 +123,13 @@ JETSON_PASSWORD=nvidia ./scripts/deploy_jetson.sh --skip-system-packages
 
 ## Fixed Camera Runtime
 
+The main Jetson app starts on the eye screen and can switch between the eye, zone calibration,
+and tracking test screens:
+
+```bash
+./scripts/run_app.sh --config configs/app.yaml --zones configs/zones.yaml
+```
+
 Dry-run fixed camera on Jetson or a Linux host:
 
 ```bash
@@ -125,7 +141,7 @@ Live fixed camera with the RP2040 controller attached:
 ```bash
 ./scripts/run_fixed_camera.sh \
   --camera 0 \
-  --port /dev/ttyACM1 \
+  --port /dev/ttyACM0 \
   --live-controller \
   --show-window
 ```
@@ -150,7 +166,7 @@ For live RP2040 control, keep the UI disarmed until the camera view and zone ove
 ./scripts/run_tracking_test.sh \
   --fixed-camera /dev/fixed_cam \
   --turret-camera /dev/turret_cam \
-  --port /dev/ttyACM1 \
+  --port /dev/ttyACM0 \
   --live-controller
 ```
 
@@ -159,7 +175,12 @@ Controls are available as on-screen buttons and keyboard shortcuts:
 - `z`: switch to zone calibration
 - `e`: arm
 - `x`: disarm and safe stop
+- `h`: toggle human tracking for aiming tests; defaults off each time the screen opens
 - `w/a/s/d`: tilt/pan
+- `c`: save current servo center
+- `l`: start guided limit setup
+- `v`: save the current guided limit
+- `0`: clear saved center and limits
 - `space`: fire once when armed
 - `p`: poll controller status
 - `q`: quit
@@ -170,7 +191,15 @@ From an SSH session with X forwarding:
 # 192.168.55.1 = USB OTG; use LAN IP if connected via network
 ssh -Y mdev@192.168.55.1
 cd ~/cat_cannon
-./scripts/run_tracking_test_x11.sh --live-controller --port /dev/ttyACM1
+./scripts/run_tracking_test_x11.sh --live-controller --port /dev/ttyACM0
+```
+
+If the camera symlinks are not installed yet, pass the Jetson device names explicitly:
+
+```bash
+CAT_CANNON_FIXED_CAMERA=/dev/video0 \
+CAT_CANNON_TURRET_CAMERA=/dev/video2 \
+./scripts/run_tracking_test_x11.sh --live-controller --port /dev/ttyACM0
 ```
 
 ## Zone Calibration
@@ -183,8 +212,10 @@ Touchscreen-friendly zone calibration on a `1024x600` display:
 
 How it works:
 
-- tap four corners to create each four-sided zone
+- tap arbitrary points around each counter zone
+- tap near the first point to close the polygon
 - tap `Save Zones` when the polygons look correct
+- saved zones include normalized coordinates so they can be scaled across camera resolutions
 - use the on-screen buttons or hotkeys to undo, clear pending points, or delete the last zone
 - tap `Tracking Test` or press `t` to switch to the tracking test screen
 
@@ -192,4 +223,52 @@ You can run the same calibrator from the laptop bench setup:
 
 ```bash
 ./scripts/run_zone_calibrator.sh --camera 0 --output configs/zones.yaml
+```
+
+## Perception Configuration
+
+`configs/app.example.yaml` contains the runtime perception knobs:
+
+- `vision.yolo_detector: yolo` uses standard YOLO models such as `yolo11s.pt`
+- `vision.yolo_detector: yoloe` uses promptable YOLOE with `vision.yoloe_prompts`
+- `vision.yolo_imgsz` controls the inference image size without rebuilding the code
+- `tracking.horizontal_deadband_px` and `tracking.vertical_deadband_px` control aim lock
+
+The Jetson runtime preserves `configs/app.yaml` and `configs/zones.yaml` during deploy so local
+calibration and model choices are not overwritten by example defaults.
+
+## Training Data and Replay
+
+The eye and tracking screens can collect raw, unannotated camera images plus YOLO-format labels
+when confident cat detections occur:
+
+```bash
+./scripts/run_app.sh \
+  --collect-cat-dataset \
+  --dataset-dir data/cat_training \
+  --dataset-sample-hz 1.0
+```
+
+Both fixed and turret cameras write to separate `images/<camera>` and `labels/<camera>`
+subdirectories under the dataset root. Images are saved without overlays.
+
+Prepare a reviewed dataset for Ultralytics fine-tuning:
+
+```bash
+python scripts/prepare_cat_finetune_dataset.py \
+  --source data/reviewed_cat_training \
+  --output data/fine_tune/cat_v1 \
+  --val-fraction 0.2 \
+  --augment-train 2 \
+  --augment-fixed-extra 2
+```
+
+Replay reviewed fixed/turret image-label pairs through the dry-run supervisor before live tests:
+
+```bash
+python scripts/replay_cat_algorithm_dataset.py \
+  --dataset data/reviewed_cat_training \
+  --config configs/app.yaml \
+  --zones configs/zones.yaml \
+  --aim-deadband-px 10
 ```
