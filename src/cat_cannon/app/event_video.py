@@ -64,6 +64,11 @@ class TurretEventRecorder:
         self._confirmed = False
         self._shot_count = 0
         self._zone_id: str | None = None
+        self._state_counts: dict[str, int] = {}
+        self._human_present_count = 0
+        self._counter_confirmed_count = 0
+        self._target_visible_count = 0
+        self._aim_locked_count = 0
 
     @property
     def is_recording(self) -> bool:
@@ -97,6 +102,7 @@ class TurretEventRecorder:
 
         if cat_in_zone:
             self._record_zone_detection(now=now_s, zone_id=step_result.active_zone_id)
+        self._record_step_diagnostics(step_result)
         if step_result.fire_commanded:
             self._last_shot_at = now_s
             self._shot_count += 1
@@ -132,6 +138,7 @@ class TurretEventRecorder:
         self._confirmed = False
         self._shot_count = 0
         self._zone_id = zone_id
+        self._reset_diagnostics()
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -152,6 +159,18 @@ class TurretEventRecorder:
             self._zone_id = zone_id
         if self._positive_count >= max(1, self.config.zone_confirm_detections):
             self._confirmed = True
+
+    def _record_step_diagnostics(self, step_result: SupervisorStepResult) -> None:
+        state = step_result.state.value
+        self._state_counts[state] = self._state_counts.get(state, 0) + 1
+        if step_result.human_present:
+            self._human_present_count += 1
+        if step_result.counter_confirmed:
+            self._counter_confirmed_count += 1
+        if step_result.target_visible:
+            self._target_visible_count += 1
+        if step_result.aim_locked:
+            self._aim_locked_count += 1
 
     def _write_frame(self, *, cv2: Any, turret_frame: Any, now: float) -> None:
         if self._writer is None or self._frame_size is None:
@@ -224,6 +243,11 @@ class TurretEventRecorder:
         positive_count = self._positive_count
         shot_count = self._shot_count
         duration = 0.0 if started_at is None else max(0.0, now - started_at)
+        block_reason = self._block_reason(shot_count=shot_count)
+        state_counts = self._format_state_counts()
+        human_present_count = self._human_present_count
+        target_visible_count = self._target_visible_count
+        aim_locked_count = self._aim_locked_count
         if writer is not None and last_frame is not None:
             min_frames = max(1, int(math.ceil(max(duration, MIN_PLAYABLE_SECONDS) * self.fps)))
             for _ in range(max(0, min_frames - frame_count)):
@@ -240,10 +264,32 @@ class TurretEventRecorder:
         content = (
             "Cat Cannon turret event "
             f"zone={zone_id} confirmed={positive_count} shots={shot_count} "
-            f"duration={duration:.1f}s reason={reason}"
+            f"duration={duration:.1f}s reason={reason} block={block_reason} "
+            f"human={human_present_count} target_visible={target_visible_count} "
+            f"aim_locked={aim_locked_count} states={state_counts}"
         )
         self.publisher.publish(video_path, content)
         return EventVideoFinalize(video_path=video_path, content=content)
+
+    def _block_reason(self, *, shot_count: int) -> str:
+        if shot_count > 0:
+            return "fired"
+        if self._human_present_count > 0:
+            return "human_lockout"
+        if self._target_visible_count == 0:
+            return "target_not_visible"
+        if self._counter_confirmed_count == 0:
+            return "counter_not_confirmed"
+        if self._aim_locked_count == 0:
+            return "aim_never_locked"
+        return "fire_not_commanded"
+
+    def _format_state_counts(self) -> str:
+        if not self._state_counts:
+            return "-"
+        return ",".join(
+            f"{state}:{count}" for state, count in self._state_counts.items()
+        )
 
     def _reset_recording_state(self) -> None:
         self._writer = None
@@ -260,6 +306,14 @@ class TurretEventRecorder:
         self._confirmed = False
         self._shot_count = 0
         self._zone_id = None
+        self._reset_diagnostics()
+
+    def _reset_diagnostics(self) -> None:
+        self._state_counts = {}
+        self._human_present_count = 0
+        self._counter_confirmed_count = 0
+        self._target_visible_count = 0
+        self._aim_locked_count = 0
 
 
 class DiscordWebhookPublisher:

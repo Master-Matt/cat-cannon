@@ -56,14 +56,16 @@ def _result(
     zone: str | None = "counter",
     fire: bool = False,
     state: SupervisorState | None = None,
+    human: bool = False,
+    aim_locked: bool | None = None,
 ) -> SupervisorStepResult:
     return SupervisorStepResult(
         state=state or (SupervisorState.FIRE if fire else SupervisorState.TRACKING),
         fire_commanded=fire,
-        human_present=False,
+        human_present=human,
         counter_confirmed=zone is not None,
         target_visible=zone is not None,
-        aim_locked=fire,
+        aim_locked=fire if aim_locked is None else aim_locked,
         active_zone_id=zone,
         candidate_track_id="cat-1" if zone is not None else None,
         correction=None,
@@ -80,7 +82,7 @@ def test_turret_event_recorder_records_zone_entry_until_cat_leaves_without_shot(
             enabled=True,
             output_dir=str(tmp_path),
             zone_confirm_detections=1,
-            zone_lost_seconds=0.0,
+            zone_lost_seconds=0.1,
         ),
         fps=30,
         publisher=publisher,
@@ -94,6 +96,42 @@ def test_turret_event_recorder_records_zone_entry_until_cat_leaves_without_shot(
     assert len(publisher.published) == 1
     assert "zone=counter" in publisher.published[0][1]
     assert "shots=0" in publisher.published[0][1]
+
+
+def test_turret_event_recorder_reports_no_shot_block_reason(tmp_path: Path) -> None:
+    cv2 = FakeCv2()
+    publisher = FakePublisher()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            zone_confirm_detections=1,
+            zone_lost_seconds=0.1,
+        ),
+        fps=30,
+        publisher=publisher,
+    )
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone="counter", aim_locked=False),
+        now=0.0,
+    )
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone=None, state=SupervisorState.HUMAN_LOCKOUT, human=True),
+        now=0.2,
+    )
+
+    assert len(publisher.published) == 1
+    content = publisher.published[0][1]
+    assert "shots=0" in content
+    assert "block=human_lockout" in content
+    assert "human=1" in content
+    assert "aim_locked=0" in content
+    assert "states=tracking:1,human_lockout:1" in content
 
 
 def test_turret_event_recorder_discards_unconfirmed_short_detection(
