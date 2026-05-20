@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
+from collections import deque
 from dataclasses import dataclass
 
 from cat_cannon.adapters.interfaces import TurretController
-from cat_cannon.config import SystemConfig, scale_counter_zones
+from cat_cannon.config import HumanLockoutConfig, SystemConfig, scale_counter_zones
 from cat_cannon.domain.models import CounterZone, Detection, SupervisorState
 from cat_cannon.domain.safety import CounterConfirmation, DetectionPolicy, assess_scene
 from cat_cannon.domain.state_machine import SupervisorInputs, SupervisorStateMachine
@@ -23,6 +25,31 @@ class SupervisorStepResult:
     correction: TurretCorrection | None
 
 
+class HumanLockoutHysteresis:
+    def __init__(self, config: HumanLockoutConfig) -> None:
+        self.window_seconds = max(0.0, float(config.window_seconds))
+        self.frame_threshold = max(1, int(config.frame_threshold))
+        self._human_detection_times: deque[float] = deque()
+        self._locked = False
+
+    def update(self, *, human_detected: bool, now: float) -> bool:
+        now_s = float(now)
+        if human_detected:
+            self._human_detection_times.append(now_s)
+        self._prune(now=now_s)
+
+        if len(self._human_detection_times) >= self.frame_threshold:
+            self._locked = True
+        elif self._locked:
+            self._locked = False
+        return self._locked
+
+    def _prune(self, *, now: float) -> None:
+        cutoff = now - self.window_seconds
+        while self._human_detection_times and self._human_detection_times[0] < cutoff:
+            self._human_detection_times.popleft()
+
+
 @dataclass
 class SupervisorLoop:
     config: SystemConfig
@@ -34,6 +61,7 @@ class SupervisorLoop:
             required_frames=self.config.detection_policy.consecutive_counter_frames
         )
         self._machine = SupervisorStateMachine(cooldown_frames=self.config.cooldown_frames)
+        self._human_lockout = HumanLockoutHysteresis(self.config.human_lockout)
         # EMA-filtered tracking state (same algorithm as eye_screen)
         self._filtered_pan = 0.0
         self._filtered_tilt = 0.0
@@ -117,7 +145,9 @@ class SupervisorLoop:
         turret_frame_height: int | None = None,
         detection_policy_override: DetectionPolicy | None = None,
         track_people: bool = False,
+        now: float | None = None,
     ) -> SupervisorStepResult:
+        now_s = time.monotonic() if now is None else float(now)
         policy = detection_policy_override or self.config.detection_policy
         # Fixed camera: zone intersection + counter confirmation + human presence
         fixed_frame_zones = scale_counter_zones(
@@ -129,7 +159,11 @@ class SupervisorLoop:
         turret_human_present = False
         if turret_detections is not None:
             turret_human_present = self._find_turret_person(turret_detections, policy) is not None
-        human_present = assessment.human_present or turret_human_present
+        raw_human_present = assessment.human_present or turret_human_present
+        human_present = self._human_lockout.update(
+            human_detected=raw_human_present,
+            now=now_s,
+        )
         counter_confirmed = self._confirmation.update(
             assessment.candidate_cat,
             assessment.cat_on_counter and not human_present,

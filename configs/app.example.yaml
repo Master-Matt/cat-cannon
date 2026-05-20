@@ -18,6 +18,10 @@ detection:
   person_confidence_threshold: 0.55
   consecutive_counter_frames: 3
 
+human_lockout:
+  window_seconds: 2
+  frame_threshold: 10
+
 tracking:
   horizontal_deadband_px: 10
   vertical_deadband_px: 10

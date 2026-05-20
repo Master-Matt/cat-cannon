@@ -59,6 +59,12 @@ class TrackingTuning:
 
 
 @dataclass(frozen=True)
+class HumanLockoutConfig:
+    window_seconds: float = 2.0
+    frame_threshold: int = 10
+
+
+@dataclass(frozen=True)
 class EventRecordingConfig:
     enabled: bool = False
     output_dir: str = "data/event_videos"
@@ -123,6 +129,7 @@ class SystemConfig:
     tracking_calibration: TrackingCalibration
     vision: VisionConfig = VisionConfig()
     tracking_tuning: TrackingTuning = TrackingTuning()
+    human_lockout: HumanLockoutConfig = HumanLockoutConfig()
     servo_limits: ServoLimits = ServoLimits()
 
 
@@ -171,6 +178,7 @@ def load_system_config(path: str | Path) -> SystemConfig:
             deadband_deg=float(tuning.get("deadband_deg", 0.3)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
         ),
+        human_lockout=_human_lockout_config_from_raw(raw),
         servo_limits=servo_limits,
     )
 
@@ -422,6 +430,18 @@ def _event_recording_config_from_raw(raw: dict) -> EventRecordingConfig:
             event.get("discord_webhook_env", "CAT_CANNON_DISCORD_WEBHOOK_URL")
             or "CAT_CANNON_DISCORD_WEBHOOK_URL"
         ),
+    )
+
+
+def _human_lockout_config_from_raw(raw: dict) -> HumanLockoutConfig:
+    lockout = raw.get("human_lockout", {})
+    if lockout is None:
+        lockout = {}
+    if not isinstance(lockout, dict):
+        raise ValueError("Expected mapping config at human_lockout")
+    return HumanLockoutConfig(
+        window_seconds=max(0.0, float(lockout.get("window_seconds", 2.0))),
+        frame_threshold=max(1, int(lockout.get("frame_threshold", 10))),
     )
 
 
