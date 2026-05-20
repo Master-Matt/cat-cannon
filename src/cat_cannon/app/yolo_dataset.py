@@ -24,13 +24,10 @@ class CatDatasetRecorder:
         *,
         root: str | Path,
         sample_interval_s: float = 1.0,
-        class_id: int = 0,
-        class_name: str = "cat",
     ) -> None:
         self.root = Path(root)
         self.sample_interval_s = max(0.0, float(sample_interval_s))
-        self.class_id = int(class_id)
-        self.class_name = class_name
+        self.class_names = ("cat", "person")
         self._last_sample_at: dict[str, float] = {}
         self._write_dataset_metadata()
 
@@ -54,8 +51,14 @@ class CatDatasetRecorder:
         label_lines = [
             line
             for detection in detections
-            if _is_confident_cat(detection, policy)
-            for line in [_to_yolo_line(detection, frame_width=width, frame_height=height)]
+            for line in [
+                _to_recordable_yolo_line(
+                    detection,
+                    policy=policy,
+                    frame_width=width,
+                    frame_height=height,
+                )
+            ]
             if line is not None
         ]
         if not label_lines:
@@ -81,13 +84,18 @@ class CatDatasetRecorder:
 
     def _write_dataset_metadata(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / "classes.txt").write_text(f"{self.class_name}\n", encoding="utf-8")
+        classes = "".join(f"{class_name}\n" for class_name in self.class_names)
+        names = "".join(
+            f"  {class_id}: {class_name}\n"
+            for class_id, class_name in enumerate(self.class_names)
+        )
+        (self.root / "classes.txt").write_text(classes, encoding="utf-8")
         (self.root / "dataset.yaml").write_text(
             "path: .\n"
             "train: images\n"
             "val: images\n"
             "names:\n"
-            f"  {self.class_id}: {self.class_name}\n",
+            f"{names}",
             encoding="utf-8",
         )
 
@@ -97,16 +105,42 @@ def _safe_source_id(source_id: str) -> str:
     return normalized.strip("._-") or "camera"
 
 
-def _is_confident_cat(detection: Detection, policy: DetectionPolicy) -> bool:
-    return (
+def _class_id_for_detection(detection: Detection, policy: DetectionPolicy) -> int | None:
+    if (
         detection.label == policy.cat_class
         and detection.confidence >= policy.cat_confidence_threshold
+    ):
+        return 0
+    if (
+        detection.label == policy.person_class
+        and detection.confidence >= policy.person_confidence_threshold
+    ):
+        return 1
+    return None
+
+
+def _to_recordable_yolo_line(
+    detection: Detection,
+    *,
+    policy: DetectionPolicy,
+    frame_width: int,
+    frame_height: int,
+) -> str | None:
+    class_id = _class_id_for_detection(detection, policy)
+    if class_id is None:
+        return None
+    return _to_yolo_line(
+        detection,
+        class_id=class_id,
+        frame_width=frame_width,
+        frame_height=frame_height,
     )
 
 
 def _to_yolo_line(
     detection: Detection,
     *,
+    class_id: int,
     frame_width: int,
     frame_height: int,
 ) -> str | None:
@@ -128,7 +162,7 @@ def _to_yolo_line(
     normalized_width = box_width / frame_width
     normalized_height = box_height / frame_height
     return (
-        f"0 {center_x:.6f} {center_y:.6f} "
+        f"{class_id} {center_x:.6f} {center_y:.6f} "
         f"{normalized_width:.6f} {normalized_height:.6f}\n"
     )
 

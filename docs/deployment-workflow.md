@@ -137,9 +137,9 @@ For live data collection, run the main app or tracking screen with dataset captu
   --dataset-sample-hz 1.0
 ```
 
-The recorder writes raw camera frames and YOLO labels for confident cat detections from both
-cameras. Keep this data local to the Jetson until reviewed; generated datasets are intentionally
-excluded from deploy syncs.
+The recorder writes raw camera frames and YOLO labels for confident cat and person detections from
+both cameras. Labels use class `0` for cats and class `1` for people. Keep this data local to the
+Jetson until reviewed; generated datasets are intentionally excluded from deploy syncs.
 
 For short operational review clips, enable turret event recording in `configs/app.yaml`:
 

@@ -240,7 +240,7 @@ calibration and model choices are not overwritten by example defaults.
 ## Training Data and Replay
 
 The eye and tracking screens can collect raw, unannotated camera images plus YOLO-format labels
-when confident cat detections occur:
+when confident cat or person detections occur:
 
 ```bash
 ./scripts/run_app.sh \
@@ -250,7 +250,8 @@ when confident cat detections occur:
 ```
 
 Both fixed and turret cameras write to separate `images/<camera>` and `labels/<camera>`
-subdirectories under the dataset root. Images are saved without overlays.
+subdirectories under the dataset root. Images are saved without overlays. Labels use class `0` for
+cats and class `1` for people.
 
 Turret event clips can also be recorded when the fixed camera sees a cat in a calibrated zone:
 
