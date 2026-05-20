@@ -33,7 +33,9 @@ def _detection(label: str, confidence: float, bbox: BoundingBox) -> Detection:
     return Detection(track_id=f"{label}-1", label=label, confidence=confidence, bbox=bbox)
 
 
-def test_cat_dataset_recorder_writes_yolo_image_and_label(tmp_path: Path) -> None:
+def test_cat_dataset_recorder_writes_yolo_image_and_labels_for_cats_and_people(
+    tmp_path: Path,
+) -> None:
     recorder = CatDatasetRecorder(root=tmp_path, sample_interval_s=1.0)
     cv2 = FakeCv2()
     frame = FakeFrame()
@@ -55,10 +57,35 @@ def test_cat_dataset_recorder_writes_yolo_image_and_label(tmp_path: Path) -> Non
     assert sample.label_path == tmp_path / "labels" / "fixed" / "fixed_1234567.txt"
     assert (
         sample.label_path.read_text(encoding="utf-8")
-        == "0 0.250000 0.200000 0.300000 0.200000\n"
+        == "1 0.050000 0.050000 0.100000 0.100000\n"
+        "0 0.250000 0.200000 0.300000 0.200000\n"
     )
     assert cv2.writes == [(str(sample.image_path), frame)]
-    assert (tmp_path / "classes.txt").read_text(encoding="utf-8") == "cat\n"
+    assert (tmp_path / "classes.txt").read_text(encoding="utf-8") == "cat\nperson\n"
+    assert "  1: person\n" in (tmp_path / "dataset.yaml").read_text(encoding="utf-8")
+
+
+def test_cat_dataset_recorder_records_person_only_frames(tmp_path: Path) -> None:
+    recorder = CatDatasetRecorder(root=tmp_path, sample_interval_s=1.0)
+    cv2 = FakeCv2()
+
+    sample = recorder.maybe_record(
+        cv2=cv2,
+        source_id="fixed",
+        frame=FakeFrame(),
+        detections=[
+            _detection("person", 0.9, BoundingBox(x=10, y=20, width=30, height=40)),
+        ],
+        policy=_policy(),
+        now=20.0,
+    )
+
+    assert sample is not None
+    assert sample.detection_count == 1
+    assert (
+        sample.label_path.read_text(encoding="utf-8")
+        == "1 0.250000 0.200000 0.300000 0.200000\n"
+    )
 
 
 def test_cat_dataset_recorder_throttles_each_camera_independently(tmp_path: Path) -> None:
@@ -97,7 +124,7 @@ def test_cat_dataset_recorder_throttles_each_camera_independently(tmp_path: Path
     assert turret.image_path.parent == tmp_path / "images" / "turret"
 
 
-def test_cat_dataset_recorder_skips_frames_without_confident_cats(tmp_path: Path) -> None:
+def test_cat_dataset_recorder_skips_frames_without_confident_targets(tmp_path: Path) -> None:
     recorder = CatDatasetRecorder(root=tmp_path, sample_interval_s=1.0)
     cv2 = FakeCv2()
 
@@ -107,7 +134,7 @@ def test_cat_dataset_recorder_skips_frames_without_confident_cats(tmp_path: Path
         frame=FakeFrame(),
         detections=[
             _detection("cat", 0.1, BoundingBox(x=10, y=20, width=30, height=40)),
-            _detection("person", 0.9, BoundingBox(x=10, y=20, width=30, height=40)),
+            _detection("person", 0.1, BoundingBox(x=10, y=20, width=30, height=40)),
         ],
         policy=_policy(),
         now=10.0,
