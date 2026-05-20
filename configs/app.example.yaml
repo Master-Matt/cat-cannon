@@ -40,7 +40,7 @@ tracking_tuning:
   ema_alpha: 0.35
   gain: 0.5
   pan_clamp_deg: 3.0
-  deadband_deg: 0.3
+  deadband_deg: 0.1
   frame_wait_ms: 10
 
 event_recording:

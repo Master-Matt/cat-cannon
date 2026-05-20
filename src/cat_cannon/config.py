@@ -54,7 +54,7 @@ class TrackingTuning:
     ema_alpha: float = 0.35
     gain: float = 0.5
     pan_clamp_deg: float = 3.0
-    deadband_deg: float = 0.3
+    deadband_deg: float = 0.1
     frame_wait_ms: int = 10
 
 
@@ -175,7 +175,7 @@ def load_system_config(path: str | Path) -> SystemConfig:
             ema_alpha=float(tuning.get("ema_alpha", 0.35)),
             gain=float(tuning.get("gain", 0.5)),
             pan_clamp_deg=float(tuning.get("pan_clamp_deg", 3.0)),
-            deadband_deg=float(tuning.get("deadband_deg", 0.3)),
+            deadband_deg=float(tuning.get("deadband_deg", 0.1)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
         ),
         human_lockout=_human_lockout_config_from_raw(raw),

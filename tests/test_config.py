@@ -29,6 +29,12 @@ def test_example_config_exposes_servo_motion_limits() -> None:
     assert config.servo_limits.tilt_max_deg == 150
 
 
+def test_example_config_uses_small_servo_command_deadband() -> None:
+    config = load_system_config("configs/app.example.yaml")
+
+    assert config.tracking_tuning.deadband_deg == 0.1
+
+
 def test_example_config_exposes_yolo_runtime_image_size() -> None:
     config = load_system_config("configs/app.example.yaml")
 
