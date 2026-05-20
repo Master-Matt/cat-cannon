@@ -111,7 +111,7 @@ def test_main_parses_cat_dataset_collection_options(tmp_path: Path) -> None:
 
 
 def test_eye_config_accepts_main_dataset_collection_options(tmp_path: Path) -> None:
-    from cat_cannon.app.eye_screen import EyeConfig
+    from cat_cannon.app.eye_screen import EyeConfig, build_eye_dataset_recorder
 
     config = EyeConfig(
         collect_cat_dataset=True,
@@ -122,6 +122,13 @@ def test_eye_config_accepts_main_dataset_collection_options(tmp_path: Path) -> N
     assert config.collect_cat_dataset is True
     assert config.dataset_dir == str(tmp_path / "dataset")
     assert config.dataset_sample_hz == 2.0
+
+    recorder = build_eye_dataset_recorder(config)
+
+    assert recorder is not None
+    assert recorder.root == tmp_path / "dataset"
+    assert recorder.sample_interval_s == 0.5
+    assert (tmp_path / "dataset" / "dataset.yaml").exists()
 
 
 def test_main_uses_event_recording_config(tmp_path: Path) -> None:

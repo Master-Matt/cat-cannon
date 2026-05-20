@@ -78,6 +78,17 @@ class EyeState:
     blink_until: float = 0.0
 
 
+def build_eye_dataset_recorder(config: EyeConfig):
+    if not config.collect_cat_dataset:
+        return None
+    from cat_cannon.app.yolo_dataset import CatDatasetRecorder
+
+    return CatDatasetRecorder(
+        root=config.dataset_dir,
+        sample_interval_s=1.0 / max(0.001, config.dataset_sample_hz),
+    )
+
+
 def _lerp(current: float, target: float, speed: float) -> float:
     diff = target - current
     if abs(diff) < 0.005:
@@ -367,6 +378,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             if turret_camera is not None
             else None
         )
+        _bg_resources["dataset_recorder"] = build_eye_dataset_recorder(config)
 
         _bg_done.set()
 
@@ -401,6 +413,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             _fixed_cam = _bg_resources.get("fixed_camera")
             _turret_cam = _bg_resources.get("turret_camera")
             _sys_config = _bg_resources.get("system_config")
+            _dataset_recorder = _bg_resources.get("dataset_recorder")
 
             if _detector is None or _supervisor is None:
                 time.sleep(0.05)
@@ -411,6 +424,17 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 ok_fixed, fixed_frame = _fixed_cam.read()
                 if ok_fixed:
                     last_fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
+                    if _dataset_recorder is not None and _sys_config is not None:
+                        try:
+                            _dataset_recorder.maybe_record(
+                                cv2=cv2,
+                                source_id="fixed",
+                                frame=fixed_frame,
+                                detections=last_fixed_perception.detections,
+                                policy=_sys_config.detection_policy,
+                            )
+                        except Exception:
+                            pass
 
             fixed_detections = last_fixed_perception.detections if last_fixed_perception else []
             fixed_width = (
@@ -436,6 +460,17 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     turret_detections = turret_perception.detections
                     turret_width = turret_perception.width
                     turret_height = turret_perception.height
+                    if _dataset_recorder is not None and _sys_config is not None:
+                        try:
+                            _dataset_recorder.maybe_record(
+                                cv2=cv2,
+                                source_id="turret",
+                                frame=turret_frame,
+                                detections=turret_perception.detections,
+                                policy=_sys_config.detection_policy,
+                            )
+                        except Exception:
+                            pass
 
             step_result = _supervisor.process_frame(
                 detections=fixed_detections,
