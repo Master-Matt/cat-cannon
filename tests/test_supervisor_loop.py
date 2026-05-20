@@ -67,20 +67,67 @@ def test_supervisor_loop_returns_tracking_state_and_zone_after_confirmation() ->
     assert len(controller.pan_commands) >= 1
 
 
-def test_supervisor_loop_reports_human_lockout_and_safe_stop() -> None:
+def test_supervisor_loop_requires_human_hysteresis_before_lockout() -> None:
     supervisor, controller = _supervisor()
+
+    result = None
+    for index in range(9):
+        result = supervisor.process_frame(
+            [_cat_detection(), _person_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            now=index * 0.1,
+        )
+        assert result.human_present is False
+        assert result.state != SupervisorState.HUMAN_LOCKOUT
 
     result = supervisor.process_frame(
         [_cat_detection(), _person_detection()],
         frame_width=200,
         frame_height=200,
         armed=True,
+        now=0.9,
     )
-
     assert result.state == SupervisorState.HUMAN_LOCKOUT
     assert result.human_present is True
     assert result.fire_commanded is False
     # Turret still tracks when armed (just won't fire) — no safe_stop
+
+
+def test_supervisor_loop_releases_human_lockout_after_quiet_window() -> None:
+    supervisor, _controller = _supervisor()
+
+    for index in range(10):
+        locked = supervisor.process_frame(
+            [_cat_detection(), _person_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            now=index * 0.1,
+        )
+    assert locked.state == SupervisorState.HUMAN_LOCKOUT
+    assert locked.human_present is True
+
+    still_locked = supervisor.process_frame(
+        [_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        now=2.0,
+    )
+    assert still_locked.state == SupervisorState.HUMAN_LOCKOUT
+    assert still_locked.human_present is True
+
+    released = supervisor.process_frame(
+        [_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        now=3.0,
+    )
+    assert released.human_present is False
+    assert released.state != SupervisorState.HUMAN_LOCKOUT
 
 
 def test_supervisor_loop_does_not_apply_tracking_delta_when_disarmed() -> None:
@@ -163,21 +210,24 @@ def test_supervisor_does_not_track_turret_people_by_default() -> None:
     assert controller.tilt_commands == []
 
 
-def test_supervisor_tracks_turret_people_when_enabled_but_keeps_human_lockout() -> None:
+def test_supervisor_tracks_turret_people_when_enabled_but_hysteresis_controls_lockout() -> None:
     supervisor, controller = _supervisor()
 
     turret_person = Detection("person-1", "person", 0.95, BoundingBox(20, 20, 20, 20))
 
-    result = supervisor.process_frame(
-        [],
-        frame_width=200,
-        frame_height=200,
-        armed=True,
-        turret_detections=[turret_person],
-        turret_frame_width=200,
-        turret_frame_height=200,
-        track_people=True,
-    )
+    result = None
+    for index in range(10):
+        result = supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[turret_person],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            track_people=True,
+            now=index * 0.1,
+        )
 
     assert result.human_present is True
     assert result.state == SupervisorState.HUMAN_LOCKOUT

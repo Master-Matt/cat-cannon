@@ -120,6 +120,13 @@ tracking:
     }
 
 
+def test_example_config_exposes_human_lockout_hysteresis() -> None:
+    config = load_system_config("configs/app.example.yaml")
+
+    assert config.human_lockout.window_seconds == 2.0
+    assert config.human_lockout.frame_threshold == 10
+
+
 def test_vision_config_rejects_unknown_detector(tmp_path: Path) -> None:
     config_path = tmp_path / "app.yaml"
     config_path.write_text(
