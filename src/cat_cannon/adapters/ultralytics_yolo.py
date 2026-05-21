@@ -88,7 +88,9 @@ class YoloRuntimeConfig:
     def resolved_model_path(self) -> str:
         if self.detector == "yoloe":
             return _promptable_model_path(self.model_path)
-        return self.model_path if self.model_path else _bundled_model_path()
+        if self.model_path:
+            return _promptable_model_path(self.model_path)
+        return _bundled_model_path()
 
     def resolved_device(self) -> str:
         return self.device if self.device else _default_device()

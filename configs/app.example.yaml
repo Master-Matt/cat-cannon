@@ -1,6 +1,7 @@
 system:
   arm_required: true
   cooldown_frames: 10
+  fire_cooldown_seconds: 0.5
 
 vision:
   yolo_detector: yolo
@@ -16,7 +17,7 @@ detection:
   person_class: person
   cat_confidence_threshold: 0.45
   person_confidence_threshold: 0.55
-  consecutive_counter_frames: 3
+  consecutive_counter_frames: 5
 
 human_lockout:
   window_seconds: 2
@@ -48,7 +49,7 @@ event_recording:
   output_dir: data/event_videos
   post_shot_seconds: 15
   zone_confirm_seconds: 5
-  zone_confirm_detections: 20
+  zone_confirm_detections: 5
   zone_lost_seconds: 5
   max_event_seconds: 180
   discord_webhook_url: ''

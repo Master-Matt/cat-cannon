@@ -47,6 +47,7 @@ class EyeConfig:
     yolo_imgsz: int = DEFAULT_YOLO_IMGSZ
     yolo_detector: str = "yolo"
     yolo_prompts: tuple[YoloPrompt, ...] = DEFAULT_YOLOE_PROMPTS
+    detect_interval: int = 5
     window_width: int = 1024
     window_height: int = 600
     fullscreen: bool = True
@@ -338,6 +339,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     servo_limits=system_config.servo_limits,
                 )
                 session.start()
+                if config.arm_on_start:
+                    session.enable()
                 controller = ctrl
             except Exception:
                 pass
@@ -402,6 +405,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         nonlocal _latest_step_result, _latest_gaze, _detect_running
         frame_counter = 0
         last_fixed_perception = None
+        fixed_detect_interval = max(1, int(config.detect_interval))
 
         while _detect_running:
             if not _bg_done.is_set():
@@ -420,7 +424,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 continue
 
             # Fixed camera: detect at interval for zone confirmation
-            if _fixed_cam is not None and frame_counter % 5 == 0:
+            if _fixed_cam is not None and frame_counter % fixed_detect_interval == 0:
                 ok_fixed, fixed_frame = _fixed_cam.read()
                 if ok_fixed:
                     last_fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
@@ -486,13 +490,15 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             _event_recorder = _bg_resources.get("event_recorder")
             if _event_recorder is not None and turret_perception is not None:
                 try:
-                    _event_recorder.update(
+                    finalized = _event_recorder.update(
                         cv2=cv2,
                         turret_frame=turret_frame,
                         step_result=step_result,
                     )
+                    if finalized is not None:
+                        print(f"[event-video] saved {finalized.video_path}", flush=True)
                 except Exception:
-                    pass
+                    print("[event-video] recorder update failed", flush=True)
 
             # Compute gaze from turret detection
             gaze = None
@@ -661,9 +667,11 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         _event_recorder = _bg_resources.get("event_recorder")
         if _event_recorder is not None:
             try:
-                _event_recorder.close()
+                finalized = _event_recorder.close()
+                if finalized is not None:
+                    print(f"[event-video] saved {finalized.video_path}", flush=True)
             except Exception:
-                pass
+                print("[event-video] recorder close failed", flush=True)
         if fixed_camera is not None:
             fixed_camera.release()
         if turret_camera is not None:

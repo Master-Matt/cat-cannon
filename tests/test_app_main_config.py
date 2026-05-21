@@ -47,6 +47,15 @@ def test_main_yolo_image_size_cli_overrides_app_config(tmp_path: Path) -> None:
     assert config.yolo_imgsz == 640
 
 
+def test_main_parses_detection_interval(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    _write_app_config(config_path, yolo_imgsz=640)
+
+    config = parse_args(["--config", str(config_path), "--detect-interval", "1"])
+
+    assert config.detect_interval == 1
+
+
 def test_main_uses_yoloe_detector_and_prompts_from_app_config(tmp_path: Path) -> None:
     config_path = tmp_path / "app.yaml"
     config_path.write_text(

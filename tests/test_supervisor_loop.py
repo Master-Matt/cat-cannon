@@ -44,6 +44,10 @@ def _cat_detection() -> Detection:
     return Detection("cat-1", "cat", 0.9, BoundingBox(50, 40, 20, 50))
 
 
+def _right_side_cat_detection() -> Detection:
+    return Detection("cat-1", "cat", 0.9, BoundingBox(140, 40, 20, 50))
+
+
 def _person_detection() -> Detection:
     return Detection("person-1", "person", 0.95, BoundingBox(20, 20, 60, 120))
 
@@ -188,6 +192,60 @@ def test_supervisor_uses_turret_camera_for_targeting_when_available() -> None:
     assert result.aim_locked is True
     # No servo commands sent because target is already centered (below deadband)
     assert len(controller.pan_commands) == 0
+
+
+def test_supervisor_leads_turret_horizontally_from_fixed_zone_when_turret_target_missing() -> None:
+    supervisor, controller = _supervisor()
+
+    supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+    )
+    result = supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+    )
+
+    assert result.counter_confirmed is True
+    assert result.aim_locked is False
+    assert result.fire_commanded is False
+    assert result.correction is not None
+    assert result.correction.pan_delta > 0
+    assert controller.pan_commands[-1] > 0
+    assert controller.tilt_commands[-1] == 0.0
+
+
+def test_supervisor_logs_zone_activation_and_fire(capsys) -> None:
+    supervisor, controller = _supervisor()
+    turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(90, 90, 20, 20))
+
+    for _ in range(4):
+        result = supervisor.process_frame(
+            [_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+        )
+
+    output = capsys.readouterr().out
+    assert result.fire_commanded is True
+    assert controller.fired == 1
+    assert "[supervisor]" in output
+    assert "zone_active zone=counter" in output
+    assert "fire_commanded zone=counter" in output
 
 
 def test_supervisor_does_not_track_turret_people_by_default() -> None:

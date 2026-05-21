@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from cat_cannon.adapters.interfaces import TurretController
 from cat_cannon.config import HumanLockoutConfig, SystemConfig, scale_counter_zones
@@ -60,11 +61,15 @@ class SupervisorLoop:
         self._confirmation = CounterConfirmation(
             required_frames=self.config.detection_policy.consecutive_counter_frames
         )
-        self._machine = SupervisorStateMachine(cooldown_frames=self.config.cooldown_frames)
+        self._machine = SupervisorStateMachine(
+            cooldown_frames=self.config.cooldown_frames,
+            cooldown_seconds=self.config.fire_cooldown_seconds,
+        )
         self._human_lockout = HumanLockoutHysteresis(self.config.human_lockout)
         # EMA-filtered tracking state (same algorithm as eye_screen)
         self._filtered_pan = 0.0
         self._filtered_tilt = 0.0
+        self._logged_active_zone_id: str | None = None
 
     def _find_turret_cat(
         self,
@@ -134,6 +139,24 @@ class SupervisorLoop:
         if abs(cmd_pan) > tuning.deadband_deg or abs(cmd_tilt) > tuning.deadband_deg:
             self.controller.apply_tracking_delta(cmd_pan, cmd_tilt)
 
+    def _fixed_camera_horizontal_lead(
+        self,
+        *,
+        cat: Detection,
+        frame_width: int,
+        frame_height: int,
+    ) -> TurretCorrection:
+        correction = compute_turret_correction(
+            bbox=cat.bbox,
+            frame=FrameSize(width=frame_width, height=frame_height),
+            calibration=self.config.tracking_calibration,
+        )
+        return TurretCorrection(
+            pan_delta=correction.pan_delta,
+            tilt_delta=0.0,
+            aim_locked=False,
+        )
+
     def process_frame(
         self,
         detections,
@@ -198,6 +221,13 @@ class SupervisorLoop:
                 )
                 aim_locked = correction.aim_locked
                 self._apply_ema_tracking(correction)
+            elif should_track and assessment.candidate_cat is not None and not human_present:
+                correction = self._fixed_camera_horizontal_lead(
+                    cat=assessment.candidate_cat,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                )
+                self._apply_ema_tracking(correction)
         elif armed and should_track and assessment.candidate_cat is not None:
             # Fallback: no turret camera, use fixed camera for targeting
             correction = compute_turret_correction(
@@ -220,7 +250,20 @@ class SupervisorLoop:
                 counter_confirmed=counter_confirmed,
                 target_visible=target_visible,
                 aim_locked=aim_locked,
-            )
+            ),
+            now=now_s,
+        )
+        self._log_activation_and_fire(
+            assessment_active_zone_id=assessment.active_zone_id,
+            result=result,
+            human_present=human_present,
+            counter_confirmed=counter_confirmed,
+            target_visible=target_visible,
+            aim_locked=aim_locked,
+            candidate_track_id=(
+                assessment.candidate_cat.track_id if assessment.candidate_cat else None
+            ),
+            correction=correction,
         )
 
         # Only safe_stop when disarmed; only fire when no human present
@@ -242,3 +285,56 @@ class SupervisorLoop:
             ),
             correction=correction,
         )
+
+    def _log_activation_and_fire(
+        self,
+        *,
+        assessment_active_zone_id: str | None,
+        result,
+        human_present: bool,
+        counter_confirmed: bool,
+        target_visible: bool,
+        aim_locked: bool,
+        candidate_track_id: str | None,
+        correction: TurretCorrection | None,
+    ) -> None:
+        active_zone_id = assessment_active_zone_id if counter_confirmed else None
+        if active_zone_id != self._logged_active_zone_id:
+            if active_zone_id is None and self._logged_active_zone_id is not None:
+                print(
+                    "[supervisor] "
+                    f"ts={_utc_log_timestamp()} zone_clear "
+                    f"previous_zone={self._logged_active_zone_id} "
+                    f"state={result.state.value} human={human_present}",
+                    flush=True,
+                )
+            elif active_zone_id is not None:
+                print(
+                    "[supervisor] "
+                    f"ts={_utc_log_timestamp()} zone_active "
+                    f"zone={active_zone_id} track={candidate_track_id or '-'} "
+                    f"state={result.state.value} target_visible={target_visible} "
+                    f"aim_locked={aim_locked} human={human_present}",
+                    flush=True,
+                )
+            self._logged_active_zone_id = active_zone_id
+
+        if result.fire_commanded:
+            correction_text = "-"
+            if correction is not None:
+                correction_text = (
+                    f"pan={correction.pan_delta:.2f},tilt={correction.tilt_delta:.2f}"
+                )
+            print(
+                "[supervisor] "
+                f"ts={_utc_log_timestamp()} fire_commanded "
+                f"zone={assessment_active_zone_id or '-'} "
+                f"track={candidate_track_id or '-'} "
+                f"aim_locked={aim_locked} human={human_present} "
+                f"correction={correction_text}",
+                flush=True,
+            )
+
+
+def _utc_log_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")

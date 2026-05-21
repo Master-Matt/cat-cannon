@@ -127,6 +127,7 @@ class SystemConfig:
     cooldown_frames: int
     detection_policy: DetectionPolicy
     tracking_calibration: TrackingCalibration
+    fire_cooldown_seconds: float | None = None
     vision: VisionConfig = VisionConfig()
     tracking_tuning: TrackingTuning = TrackingTuning()
     human_lockout: HumanLockoutConfig = HumanLockoutConfig()
@@ -153,6 +154,7 @@ def load_system_config(path: str | Path) -> SystemConfig:
 
     return SystemConfig(
         cooldown_frames=int(system["cooldown_frames"]),
+        fire_cooldown_seconds=_optional_float(system.get("fire_cooldown_seconds")),
         vision=_vision_config_from_raw(raw),
         detection_policy=DetectionPolicy(
             cat_class=str(detection["cat_class"]),

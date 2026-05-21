@@ -120,3 +120,22 @@ def test_state_machine_enters_human_lockout_immediately() -> None:
 
     assert result.state == SupervisorState.HUMAN_LOCKOUT
     assert result.fire_commanded is False
+
+
+def test_state_machine_can_use_wall_clock_fire_cooldown() -> None:
+    machine = SupervisorStateMachine(cooldown_frames=99, cooldown_seconds=0.5)
+    locked = SupervisorInputs(
+        armed=True,
+        human_present=False,
+        counter_confirmed=True,
+        target_visible=True,
+        aim_locked=True,
+    )
+
+    assert machine.advance(locked, now=0.0).fire_commanded is False
+    assert machine.advance(locked, now=0.1).fire_commanded is False
+    assert machine.advance(locked, now=0.2).fire_commanded is True
+    assert machine.advance(locked, now=0.3).fire_commanded is False
+    assert machine.advance(locked, now=0.69).state == SupervisorState.COOLDOWN
+    assert machine.advance(locked, now=0.7).state == SupervisorState.AIM_LOCK
+    assert machine.advance(locked, now=0.71).fire_commanded is True

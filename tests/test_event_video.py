@@ -1,4 +1,5 @@
 import json
+import urllib.error
 from pathlib import Path
 
 from cat_cannon.app.event_video import (
@@ -284,6 +285,64 @@ def test_turret_event_recorder_extends_until_post_shot_window(tmp_path: Path) ->
     assert "shots=1" in publisher.published[0][1]
 
 
+def test_turret_event_recorder_starts_on_shot_even_if_zone_blinks_out(
+    tmp_path: Path,
+) -> None:
+    cv2 = FakeCv2()
+    publisher = FakePublisher()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            post_shot_seconds=15.0,
+        ),
+        fps=30,
+        publisher=publisher,
+    )
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone=None, fire=True),
+        now=1.0,
+    )
+    recorder.update(cv2=cv2, turret_frame=FakeFrame(), step_result=_result(zone=None), now=16.1)
+
+    assert cv2.writers[0].released is True
+    assert len(publisher.published) == 1
+    assert "zone=-" in publisher.published[0][1]
+    assert "shots=1" in publisher.published[0][1]
+    assert "block=fired" in publisher.published[0][1]
+
+
+def test_turret_event_recorder_logs_event_lifecycle(tmp_path: Path, capsys) -> None:
+    cv2 = FakeCv2()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            post_shot_seconds=1.0,
+            zone_lost_seconds=0.0,
+        ),
+        fps=30,
+    )
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone="counter", fire=True),
+        now=1.0,
+    )
+    recorder.update(cv2=cv2, turret_frame=FakeFrame(), step_result=_result(zone=None), now=2.1)
+
+    output = capsys.readouterr().out
+    assert "[event-video] started" in output
+    assert "reason=shot" in output
+    assert "[event-video] finalized" in output
+    assert "shots=1" in output
+    assert "block=fired" in output
+
+
 def test_turret_event_recorder_preserves_wall_clock_duration_for_sparse_updates(
     tmp_path: Path,
 ) -> None:
@@ -311,7 +370,8 @@ def test_turret_event_recorder_preserves_wall_clock_duration_for_sparse_updates(
 
 
 class FakeResponse:
-    status = 204
+    def __init__(self, status: int = 204) -> None:
+        self.status = status
 
     def __enter__(self) -> "FakeResponse":
         return self
@@ -330,6 +390,39 @@ class FakeUrlopen:
     def __call__(self, request, *, timeout: float):
         self.requests.append((request, timeout))
         return FakeResponse()
+
+
+class FlakyUrlopen:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def __call__(self, request, *, timeout: float):
+        self.requests.append((request, timeout))
+        if len(self.requests) < 3:
+            raise urllib.error.URLError("temporary outage")
+        return FakeResponse()
+
+
+class FakeHttpErrorUrlopen:
+    def __call__(self, request, *, timeout: float):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            400,
+            "Bad Request",
+            {},
+            fp=FakeErrorBody(b'{"message":"bad upload"}'),
+        )
+
+
+class FakeErrorBody:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def read(self) -> bytes:
+        return self.body
+
+    def close(self) -> None:
+        return None
 
 
 def test_discord_webhook_publisher_uploads_video_with_mentions_disabled(tmp_path: Path) -> None:
@@ -354,6 +447,43 @@ def test_discord_webhook_publisher_uploads_video_with_mentions_disabled(tmp_path
     payload = json.loads(payload_json.decode("utf-8"))
     assert payload["content"] == "cat fired @everyone"
     assert payload["allowed_mentions"] == {"parse": []}
+
+
+def test_discord_webhook_publisher_reports_http_failure_body(tmp_path: Path) -> None:
+    video_path = tmp_path / "event.mp4"
+    video_path.write_bytes(b"fake-video")
+    publisher = DiscordWebhookPublisher(
+        webhook_url="https://discord.com/api/webhooks/123/token",
+        urlopen=FakeHttpErrorUrlopen(),
+        async_publish=False,
+    )
+
+    try:
+        publisher.publish(video_path, "cat fired")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected upload failure")
+
+    assert "status 400" in message
+    assert "bad upload" in message
+
+
+def test_discord_webhook_publisher_retries_transient_upload_failures(tmp_path: Path) -> None:
+    video_path = tmp_path / "event.mp4"
+    video_path.write_bytes(b"fake-video")
+    flaky_urlopen = FlakyUrlopen()
+    publisher = DiscordWebhookPublisher(
+        webhook_url="https://discord.com/api/webhooks/123/token",
+        urlopen=flaky_urlopen,
+        async_publish=False,
+        retry_attempts=3,
+        retry_backoff_seconds=0.0,
+    )
+
+    publisher.publish(video_path, "cat fired")
+
+    assert len(flaky_urlopen.requests) == 3
 
 
 def test_discord_webhook_publisher_skips_empty_video(tmp_path: Path) -> None:

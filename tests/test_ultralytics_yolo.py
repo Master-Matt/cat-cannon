@@ -167,6 +167,32 @@ def test_yoloe_runtime_prefers_engine_even_if_prompt_weights_exist(monkeypatch, 
     assert config.resolved_model_path() == str(models_dir / "yoloe-11s-seg.engine")
 
 
+def test_yolo_runtime_prefers_engine_for_configured_local_model(monkeypatch, tmp_path) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "cat_person_v1.engine").write_bytes(b"engine")
+    (models_dir / "cat_person_v1.pt").write_bytes(b"weights")
+    monkeypatch.setattr("cat_cannon.adapters.ultralytics_yolo._models_dir", lambda: models_dir)
+
+    config = YoloRuntimeConfig(detector="yolo", model_path="cat_person_v1.pt")
+
+    assert config.resolved_model_path() == str(models_dir / "cat_person_v1.engine")
+
+
+def test_yolo_runtime_uses_configured_local_weights_when_engine_missing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "cat_person_v1.pt").write_bytes(b"weights")
+    monkeypatch.setattr("cat_cannon.adapters.ultralytics_yolo._models_dir", lambda: models_dir)
+
+    config = YoloRuntimeConfig(detector="yolo", model_path="cat_person_v1.pt")
+
+    assert config.resolved_model_path() == str(models_dir / "cat_person_v1.pt")
+
+
 def test_yoloe_detector_sets_prompt_classes(monkeypatch) -> None:
     calls: dict[str, object] = {}
 

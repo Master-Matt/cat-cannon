@@ -35,6 +35,36 @@ def test_example_config_uses_small_servo_command_deadband() -> None:
     assert config.tracking_tuning.deadband_deg == 0.1
 
 
+def test_system_config_can_use_wall_clock_fire_cooldown(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(
+        """
+system:
+  arm_required: true
+  cooldown_frames: 10
+  fire_cooldown_seconds: 0.5
+detection:
+  cat_class: cat
+  person_class: person
+  cat_confidence_threshold: 0.45
+  person_confidence_threshold: 0.55
+  consecutive_counter_frames: 3
+tracking:
+  horizontal_deadband_px: 5
+  vertical_deadband_px: 5
+  horizontal_gain: 0.03
+  vertical_gain: 0.03
+  aim_offset_x_px: 0
+  aim_offset_y_px: 20
+""",
+        encoding="utf-8",
+    )
+
+    config = load_system_config(config_path)
+
+    assert config.fire_cooldown_seconds == 0.5
+
+
 def test_example_config_exposes_yolo_runtime_image_size() -> None:
     config = load_system_config("configs/app.example.yaml")
 

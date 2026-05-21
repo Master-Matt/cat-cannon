@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import random
 import shutil
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -41,11 +42,20 @@ def prepare_finetune_dataset(
     overwrite: bool = False,
     seed: int | None = None,
 ) -> FinetuneDatasetSummary:
-    del seed  # Reserved for future shuffled splits; current split is chronological by filename.
     source = Path(source_root)
     output = Path(output_root)
     samples = discover_yolo_samples(source)
-    train_samples, val_samples = split_samples_by_camera(samples, val_fraction=val_fraction)
+    train_samples, val_samples = split_samples_by_camera(
+        samples,
+        val_fraction=val_fraction,
+        seed=seed,
+    )
+    class_names = _class_names_from_source(
+        source,
+        class_id=class_id,
+        class_name=class_name,
+    )
+    _validate_label_class_ids(samples, class_names=class_names)
 
     if fixed_train_repeats < 1:
         raise ValueError("fixed_train_repeats must be at least 1")
@@ -53,8 +63,11 @@ def prepare_finetune_dataset(
         raise ValueError("augmentation multipliers must be non-negative")
 
     _prepare_output_root(output, overwrite=overwrite)
-    _write_dataset_yaml(output, class_id=class_id, class_name=class_name)
-    (output / "classes.txt").write_text(f"{class_name}\n", encoding="utf-8")
+    _write_dataset_yaml(output, class_names=class_names)
+    (output / "classes.txt").write_text(
+        "".join(f"{name}\n" for name in class_names),
+        encoding="utf-8",
+    )
 
     manifest_rows: list[dict[str, str]] = []
     counts: Counter[tuple[str, str]] = Counter()
@@ -146,6 +159,7 @@ def split_samples_by_camera(
     samples: list[YoloSourceSample],
     *,
     val_fraction: float,
+    seed: int | None = None,
 ) -> tuple[list[YoloSourceSample], list[YoloSourceSample]]:
     if not 0.0 <= val_fraction < 1.0:
         raise ValueError("val_fraction must be >= 0.0 and < 1.0")
@@ -156,7 +170,10 @@ def split_samples_by_camera(
 
     train: list[YoloSourceSample] = []
     val: list[YoloSourceSample] = []
+    rng = random.Random(seed) if seed is not None else None
     for camera_samples in grouped.values():
+        if rng is not None:
+            rng.shuffle(camera_samples)
         val_count = _validation_count(len(camera_samples), val_fraction)
         if val_count:
             train.extend(camera_samples[:-val_count])
@@ -184,13 +201,55 @@ def _prepare_output_root(output: Path, *, overwrite: bool) -> None:
         (output / "labels" / split).mkdir(parents=True, exist_ok=True)
 
 
-def _write_dataset_yaml(output: Path, *, class_id: int, class_name: str) -> None:
+def _class_names_from_source(
+    source: Path,
+    *,
+    class_id: int,
+    class_name: str,
+) -> tuple[str, ...]:
+    classes_path = source / "classes.txt"
+    if classes_path.exists():
+        class_names = tuple(
+            line.strip()
+            for line in classes_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        if class_names:
+            return class_names
+
+    if class_id < 0:
+        raise ValueError("class_id must be non-negative")
+    class_names = [f"class_{index}" for index in range(class_id + 1)]
+    class_names[class_id] = class_name
+    return tuple(class_names)
+
+
+def _validate_label_class_ids(
+    samples: list[YoloSourceSample],
+    *,
+    class_names: tuple[str, ...],
+) -> None:
+    for sample in samples:
+        _, labels = _read_yolo_labels(sample.label_path)
+        for label in labels:
+            if label < 0 or label >= len(class_names):
+                raise ValueError(
+                    f"label class id {label} in {sample.label_path} is not declared "
+                    f"by source classes.txt ({len(class_names)} classes)"
+                )
+
+
+def _write_dataset_yaml(output: Path, *, class_names: tuple[str, ...]) -> None:
+    names = "".join(
+        f"  {class_id}: {class_name}\n"
+        for class_id, class_name in enumerate(class_names)
+    )
     (output / "dataset.yaml").write_text(
-        "path: .\n"
+        f"path: {output.resolve().as_posix()}\n"
         "train: images/train\n"
         "val: images/val\n"
         "names:\n"
-        f"  {class_id}: {class_name}\n",
+        f"{names}",
         encoding="utf-8",
     )
 

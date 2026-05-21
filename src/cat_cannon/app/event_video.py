@@ -90,14 +90,19 @@ class TurretEventRecorder:
             step_result.active_zone_id is not None
             and step_result.state != SupervisorState.DISARMED
         )
+        shot_commanded = (
+            step_result.fire_commanded
+            and step_result.state != SupervisorState.DISARMED
+        )
         if not self.is_recording:
-            if not cat_in_zone:
+            if not cat_in_zone and not shot_commanded:
                 return None
             self._start(
                 cv2=cv2,
                 turret_frame=turret_frame,
                 now=now_s,
                 zone_id=step_result.active_zone_id,
+                reason="shot" if shot_commanded else "zone",
             )
 
         if cat_in_zone:
@@ -124,7 +129,15 @@ class TurretEventRecorder:
             return None
         return self._finalize(now=time.time(), reason="shutdown")
 
-    def _start(self, *, cv2: Any, turret_frame: Any, now: float, zone_id: str | None) -> None:
+    def _start(
+        self,
+        *,
+        cv2: Any,
+        turret_frame: Any,
+        now: float,
+        zone_id: str | None,
+        reason: str,
+    ) -> None:
         height, width = turret_frame.shape[:2]
         self._frame_size = (int(width), int(height))
         self._started_at = now
@@ -151,6 +164,11 @@ class TurretEventRecorder:
             self._frame_size = None
             raise RuntimeError("failed to open event video writer")
         self._writer = writer
+        print(
+            "[event-video] "
+            f"started path={self._video_path} zone={zone_id or '-'} reason={reason}",
+            flush=True,
+        )
 
     def _record_zone_detection(self, *, now: float, zone_id: str | None) -> None:
         self._last_zone_at = now
@@ -268,6 +286,7 @@ class TurretEventRecorder:
             f"human={human_present_count} target_visible={target_visible_count} "
             f"aim_locked={aim_locked_count} states={state_counts}"
         )
+        print(f"[event-video] finalized path={video_path} {content}", flush=True)
         self.publisher.publish(video_path, content)
         return EventVideoFinalize(video_path=video_path, content=content)
 
@@ -326,6 +345,8 @@ class DiscordWebhookPublisher:
         max_upload_mb: float = 24.0,
         async_publish: bool = True,
         file_ready_timeout: float = 2.0,
+        retry_attempts: int = 3,
+        retry_backoff_seconds: float = 1.0,
         urlopen=urllib.request.urlopen,
     ) -> None:
         self.webhook_url = _validated_discord_webhook_url(webhook_url)
@@ -334,28 +355,61 @@ class DiscordWebhookPublisher:
         self.max_upload_bytes = int(max_upload_mb * 1024 * 1024)
         self.async_publish = async_publish
         self.file_ready_timeout = float(file_ready_timeout)
+        self.retry_attempts = max(1, int(retry_attempts))
+        self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
         self._urlopen = urlopen
 
     def publish(self, video_path: Path, content: str) -> None:
         if not _wait_for_non_empty_file(video_path, timeout=self.file_ready_timeout):
+            print(f"[event-video] Discord upload skipped; file not ready: {video_path}", flush=True)
             return
         if video_path.stat().st_size > self.max_upload_bytes:
+            print(
+                f"[event-video] Discord upload skipped; file too large: {video_path}",
+                flush=True,
+            )
             return
         if self.async_publish:
             thread = threading.Thread(
                 target=self._publish_async,
                 args=(video_path, content),
-                daemon=True,
+                daemon=False,
             )
             thread.start()
             return
-        self._publish_sync(video_path, content)
+        self._publish_with_retries(video_path, content)
 
     def _publish_async(self, video_path: Path, content: str) -> None:
         try:
-            self._publish_sync(video_path, content)
+            self._publish_with_retries(video_path, content)
         except Exception as exc:
             print(f"[event-video] Discord upload failed: {exc}", flush=True)
+
+    def _publish_with_retries(self, video_path: Path, content: str) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                self._publish_sync(video_path, content)
+                if attempt > 1:
+                    print(
+                        "[event-video] "
+                        f"Discord upload succeeded on attempt {attempt}: {video_path.name}",
+                        flush=True,
+                    )
+                return
+            except RuntimeError as exc:
+                last_error = exc
+                if attempt >= self.retry_attempts:
+                    break
+                print(
+                    "[event-video] "
+                    f"Discord upload attempt {attempt}/{self.retry_attempts} failed: {exc}",
+                    flush=True,
+                )
+                time.sleep(self.retry_backoff_seconds)
+        if last_error is None:
+            raise RuntimeError("Discord webhook upload failed")
+        raise last_error
 
     def _publish_sync(self, video_path: Path, content: str) -> None:
         request = _build_discord_file_request(
@@ -368,9 +422,18 @@ class DiscordWebhookPublisher:
             with self._urlopen(request, timeout=self.timeout) as response:
                 status = getattr(response, "status", 204)
                 if not 200 <= int(status) < 300:
-                    raise RuntimeError(f"Discord webhook upload failed with status {status}")
+                    body = _read_response_body(response)
+                    raise RuntimeError(
+                        f"Discord webhook upload failed with status {status}: {body}"
+                    )
+                print(f"[event-video] Discord upload complete: {video_path.name}", flush=True)
+        except urllib.error.HTTPError as exc:
+            body = _read_response_body(exc)
+            raise RuntimeError(
+                f"Discord webhook upload failed with status {exc.code}: {body}"
+            ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError("Discord webhook upload failed") from exc
+            raise RuntimeError(f"Discord webhook upload failed: {exc.reason}") from exc
 
 
 def build_event_video_recorder(
@@ -458,6 +521,16 @@ def _build_discord_file_request(
             "User-Agent": "cat-cannon-event-recorder",
         },
     )
+
+
+def _read_response_body(response) -> str:
+    try:
+        body = response.read()
+    except Exception:
+        return "-"
+    if isinstance(body, bytes):
+        return body[:500].decode("utf-8", errors="replace") or "-"
+    return str(body)[:500] or "-"
 
 
 def _append_form_field(

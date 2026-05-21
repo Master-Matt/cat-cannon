@@ -164,6 +164,7 @@ def run_app(config: AppConfig) -> None:
                     yolo_imgsz=config.yolo_imgsz,
                     yolo_detector=config.yolo_detector,
                     yolo_prompts=config.yolo_prompts,
+                    detect_interval=config.detect_interval,
                     window_width=config.window_width,
                     window_height=config.window_height,
                     fullscreen=config.fullscreen,

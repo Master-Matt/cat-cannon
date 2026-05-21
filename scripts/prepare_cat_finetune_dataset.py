@@ -44,6 +44,12 @@ def main() -> int:
         help="Additional augmented copies per fixed-camera training image.",
     )
     parser.add_argument("--fixed-camera", default="fixed")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Deterministically shuffle samples before train/val split.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -55,6 +61,7 @@ def main() -> int:
         augment_train_multiplier=args.augment_train,
         fixed_augment_multiplier=args.augment_fixed_extra,
         fixed_camera=args.fixed_camera,
+        seed=args.seed,
         overwrite=args.overwrite,
     )
 
