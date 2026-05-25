@@ -64,15 +64,19 @@ def test_replay_fires_after_confirmation_and_aim_lock() -> None:
     assert snapshots[-1].fire_count == 1
 
 
-def test_replay_human_presence_forces_safe_stop_and_blocks_fire() -> None:
+def test_replay_requires_human_confirmation_before_lockout_blocks_fire() -> None:
     supervisor, controller = _supervisor()
     frames = [
         ReplayFrame([_cat_detection()], 200, 200),
+        ReplayFrame([_cat_detection(), _person_detection()], 200, 200),
+        ReplayFrame([_cat_detection(), _person_detection()], 200, 200),
+        ReplayFrame([_cat_detection(), _person_detection()], 200, 200),
         ReplayFrame([_cat_detection(), _person_detection()], 200, 200),
         ReplayFrame([_cat_detection(), _person_detection()], 200, 200),
     ]
 
     snapshots = run_replay(supervisor, frames)
 
-    assert controller.fired == 0
-    # Human presence blocks fire but turret still tracks when armed
+    assert controller.fired == 1
+    assert any(snapshot.fire_count == 1 for snapshot in snapshots[1:5])
+    assert snapshots[-1].fire_count == 1

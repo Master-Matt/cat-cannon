@@ -61,7 +61,7 @@ class TrackingTuning:
 @dataclass(frozen=True)
 class HumanLockoutConfig:
     window_seconds: float = 2.0
-    frame_threshold: int = 10
+    frame_threshold: int = 5
 
 
 @dataclass(frozen=True)
@@ -128,6 +128,8 @@ class SystemConfig:
     detection_policy: DetectionPolicy
     tracking_calibration: TrackingCalibration
     fire_cooldown_seconds: float | None = None
+    fire_burst_count: int = 1
+    fire_burst_interval_seconds: float | None = None
     vision: VisionConfig = VisionConfig()
     tracking_tuning: TrackingTuning = TrackingTuning()
     human_lockout: HumanLockoutConfig = HumanLockoutConfig()
@@ -155,6 +157,10 @@ def load_system_config(path: str | Path) -> SystemConfig:
     return SystemConfig(
         cooldown_frames=int(system["cooldown_frames"]),
         fire_cooldown_seconds=_optional_float(system.get("fire_cooldown_seconds")),
+        fire_burst_count=int(system.get("fire_burst_count", 1)),
+        fire_burst_interval_seconds=_optional_float(
+            system.get("fire_burst_interval_seconds")
+        ),
         vision=_vision_config_from_raw(raw),
         detection_policy=DetectionPolicy(
             cat_class=str(detection["cat_class"]),
@@ -162,6 +168,9 @@ def load_system_config(path: str | Path) -> SystemConfig:
             cat_confidence_threshold=float(detection["cat_confidence_threshold"]),
             person_confidence_threshold=float(detection["person_confidence_threshold"]),
             consecutive_counter_frames=int(detection["consecutive_counter_frames"]),
+            confirmation_miss_tolerance_frames=int(
+                detection.get("confirmation_miss_tolerance_frames", 0)
+            ),
         ),
         tracking_calibration=TrackingCalibration(
             horizontal_deadband_px=float(tracking["horizontal_deadband_px"]),
@@ -443,7 +452,7 @@ def _human_lockout_config_from_raw(raw: dict) -> HumanLockoutConfig:
         raise ValueError("Expected mapping config at human_lockout")
     return HumanLockoutConfig(
         window_seconds=max(0.0, float(lockout.get("window_seconds", 2.0))),
-        frame_threshold=max(1, int(lockout.get("frame_threshold", 10))),
+        frame_threshold=max(1, int(lockout.get("frame_threshold", 5))),
     )
 
 

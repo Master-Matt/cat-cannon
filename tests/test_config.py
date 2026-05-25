@@ -11,11 +11,13 @@ from cat_cannon.config import (
 )
 
 
-def test_example_config_uses_ten_pixel_aim_lock_deadband() -> None:
+def test_example_config_uses_fifteen_pixel_aim_lock_deadband() -> None:
     config = load_system_config("configs/app.example.yaml")
 
-    assert config.tracking_calibration.horizontal_deadband_px == 10
-    assert config.tracking_calibration.vertical_deadband_px == 10
+    assert config.tracking_calibration.horizontal_deadband_px == 15
+    assert config.tracking_calibration.vertical_deadband_px == 15
+    assert config.detection_policy.consecutive_counter_frames == 3
+    assert config.detection_policy.confirmation_miss_tolerance_frames == 5
     assert config.tracking_calibration.aim_offset_x_px == 0
     assert config.tracking_calibration.aim_offset_y_px == 20
 
@@ -63,6 +65,39 @@ tracking:
     config = load_system_config(config_path)
 
     assert config.fire_cooldown_seconds == 0.5
+
+
+def test_system_config_can_use_fire_burst_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "app.yaml"
+    config_path.write_text(
+        """
+system:
+  arm_required: true
+  cooldown_frames: 10
+  fire_cooldown_seconds: 0.5
+  fire_burst_count: 3
+  fire_burst_interval_seconds: 0.5
+detection:
+  cat_class: cat
+  person_class: person
+  cat_confidence_threshold: 0.45
+  person_confidence_threshold: 0.55
+  consecutive_counter_frames: 3
+tracking:
+  horizontal_deadband_px: 15
+  vertical_deadband_px: 15
+  horizontal_gain: 0.03
+  vertical_gain: 0.03
+  aim_offset_x_px: 0
+  aim_offset_y_px: 20
+""",
+        encoding="utf-8",
+    )
+
+    config = load_system_config(config_path)
+
+    assert config.fire_burst_count == 3
+    assert config.fire_burst_interval_seconds == 0.5
 
 
 def test_example_config_exposes_yolo_runtime_image_size() -> None:
@@ -160,7 +195,7 @@ def test_example_config_exposes_human_lockout_hysteresis() -> None:
     config = load_system_config("configs/app.example.yaml")
 
     assert config.human_lockout.window_seconds == 2.0
-    assert config.human_lockout.frame_threshold == 10
+    assert config.human_lockout.frame_threshold == 5
 
 
 def test_vision_config_rejects_unknown_detector(tmp_path: Path) -> None:

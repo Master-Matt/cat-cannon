@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from cat_cannon.domain.geometry import bbox_intersects_zone
+from cat_cannon.domain.geometry import detection_center_in_zone
 from cat_cannon.domain.models import CounterZone, Detection
 
 
@@ -13,6 +13,7 @@ class DetectionPolicy:
     cat_confidence_threshold: float
     person_confidence_threshold: float
     consecutive_counter_frames: int
+    confirmation_miss_tolerance_frames: int = 0
 
 
 @dataclass(frozen=True)
@@ -24,16 +25,17 @@ class SceneAssessment:
 
 
 class CounterConfirmation:
-    def __init__(self, required_frames: int) -> None:
+    def __init__(self, required_frames: int, max_missed_frames: int = 0) -> None:
         self._required_frames = required_frames
+        self._max_missed_frames = max(0, int(max_missed_frames))
         self._current_track_id: str | None = None
         self._counter = 0
+        self._missed_frames = 0
+        self._confirmed = False
 
     def update(self, cat: Detection | None, is_on_counter: bool) -> bool:
         if cat is None or not is_on_counter:
-            self._current_track_id = None
-            self._counter = 0
-            return False
+            return self._record_miss()
 
         if cat.track_id != self._current_track_id:
             self._current_track_id = cat.track_id
@@ -41,7 +43,25 @@ class CounterConfirmation:
         else:
             self._counter += 1
 
-        return self._counter >= self._required_frames
+        self._missed_frames = 0
+        self._confirmed = self._counter >= self._required_frames
+        return self._confirmed
+
+    def _record_miss(self) -> bool:
+        if not self._confirmed:
+            self._reset()
+            return False
+        self._missed_frames += 1
+        if self._missed_frames >= self._max_missed_frames:
+            self._reset()
+            return False
+        return True
+
+    def _reset(self) -> None:
+        self._current_track_id = None
+        self._counter = 0
+        self._missed_frames = 0
+        self._confirmed = False
 
 
 def assess_scene(
@@ -50,20 +70,22 @@ def assess_scene(
     policy: DetectionPolicy,
 ) -> SceneAssessment:
     human_present = any(
-        detection.label == policy.person_class and detection.confidence >= policy.person_confidence_threshold
+        detection.label == policy.person_class
+        and detection.confidence >= policy.person_confidence_threshold
         for detection in detections
     )
 
     cats = [
         detection
         for detection in detections
-        if detection.label == policy.cat_class and detection.confidence >= policy.cat_confidence_threshold
+        if detection.label == policy.cat_class
+        and detection.confidence >= policy.cat_confidence_threshold
     ]
     cats.sort(key=lambda detection: detection.confidence, reverse=True)
 
     for cat in cats:
         for zone in zones:
-            if bbox_intersects_zone(cat, zone):
+            if detection_center_in_zone(cat, zone):
                 return SceneAssessment(
                     human_present=human_present,
                     candidate_cat=cat,
@@ -77,4 +99,3 @@ def assess_scene(
         cat_on_counter=False,
         active_zone_id=None,
     )
-

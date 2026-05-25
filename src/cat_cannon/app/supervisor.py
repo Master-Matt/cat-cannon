@@ -59,17 +59,24 @@ class SupervisorLoop:
 
     def __post_init__(self) -> None:
         self._confirmation = CounterConfirmation(
-            required_frames=self.config.detection_policy.consecutive_counter_frames
+            required_frames=self.config.detection_policy.consecutive_counter_frames,
+            max_missed_frames=(
+                self.config.detection_policy.confirmation_miss_tolerance_frames
+            ),
         )
         self._machine = SupervisorStateMachine(
             cooldown_frames=self.config.cooldown_frames,
             cooldown_seconds=self.config.fire_cooldown_seconds,
+            burst_count=self.config.fire_burst_count,
+            burst_interval_seconds=self.config.fire_burst_interval_seconds,
         )
         self._human_lockout = HumanLockoutHysteresis(self.config.human_lockout)
         # EMA-filtered tracking state (same algorithm as eye_screen)
         self._filtered_pan = 0.0
         self._filtered_tilt = 0.0
         self._logged_active_zone_id: str | None = None
+        self._confirmed_zone_id: str | None = None
+        self._confirmed_track_id: str | None = None
 
     def _find_turret_cat(
         self,
@@ -187,14 +194,25 @@ class SupervisorLoop:
             human_detected=raw_human_present,
             now=now_s,
         )
+        human_blocks_fire = human_present
         counter_confirmed = self._confirmation.update(
             assessment.candidate_cat,
-            assessment.cat_on_counter and not human_present,
+            assessment.cat_on_counter and not human_blocks_fire,
         )
+        if counter_confirmed:
+            if assessment.active_zone_id is not None:
+                self._confirmed_zone_id = assessment.active_zone_id
+            if assessment.candidate_cat is not None:
+                self._confirmed_track_id = assessment.candidate_cat.track_id
+        else:
+            self._confirmed_zone_id = None
+            self._confirmed_track_id = None
 
         aim_locked = False
         correction: TurretCorrection | None = None
-        target_visible = assessment.candidate_cat is not None and counter_confirmed
+        target_visible = counter_confirmed
+        active_zone_id = self._confirmed_zone_id if counter_confirmed else None
+        candidate_track_id = self._confirmed_track_id if counter_confirmed else None
 
         # States where we should keep tracking even if fixed camera loses confirmation
         tracking_states = {
@@ -204,6 +222,11 @@ class SupervisorLoop:
             SupervisorState.COOLDOWN,
         }
         should_track = target_visible or self._machine.state in tracking_states
+        should_lead_from_fixed = (
+            assessment.cat_on_counter
+            and assessment.candidate_cat is not None
+            and not human_present
+        )
 
         # Turret camera: track the active target class only when armed.
         turret_target = None
@@ -221,7 +244,7 @@ class SupervisorLoop:
                 )
                 aim_locked = correction.aim_locked
                 self._apply_ema_tracking(correction)
-            elif should_track and assessment.candidate_cat is not None and not human_present:
+            elif should_lead_from_fixed:
                 correction = self._fixed_camera_horizontal_lead(
                     cat=assessment.candidate_cat,
                     frame_width=frame_width,
@@ -250,19 +273,18 @@ class SupervisorLoop:
                 counter_confirmed=counter_confirmed,
                 target_visible=target_visible,
                 aim_locked=aim_locked,
+                fire_permitted=counter_confirmed and not human_blocks_fire,
             ),
             now=now_s,
         )
         self._log_activation_and_fire(
-            assessment_active_zone_id=assessment.active_zone_id,
+            assessment_active_zone_id=active_zone_id,
             result=result,
             human_present=human_present,
             counter_confirmed=counter_confirmed,
             target_visible=target_visible,
             aim_locked=aim_locked,
-            candidate_track_id=(
-                assessment.candidate_cat.track_id if assessment.candidate_cat else None
-            ),
+            candidate_track_id=candidate_track_id,
             correction=correction,
         )
 
@@ -279,10 +301,8 @@ class SupervisorLoop:
             counter_confirmed=counter_confirmed,
             target_visible=target_visible,
             aim_locked=aim_locked,
-            active_zone_id=assessment.active_zone_id,
-            candidate_track_id=(
-                assessment.candidate_cat.track_id if assessment.candidate_cat else None
-            ),
+            active_zone_id=active_zone_id,
+            candidate_track_id=candidate_track_id,
             correction=correction,
         )
 

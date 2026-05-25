@@ -128,12 +128,13 @@ def test_algorithm_replay_fires_when_zone_confirmed_and_turret_centered() -> Non
     assert summary.fire_count == 1
     assert [row.fire_commanded for row in summary.rows].count(True) == 1
     assert summary.rows[-1].controller_fire_count == 1
-    assert all(row.fixed_in_valid_zone for row in summary.rows)
+    assert not summary.rows[0].fixed_in_valid_zone
+    assert all(row.fixed_in_valid_zone for row in summary.rows[1:])
     assert all(row.turret_aim_locked for row in summary.rows)
     assert not any(row.tracking_commanded for row in summary.rows)
 
 
-def test_algorithm_replay_does_not_fire_when_turret_is_not_centered() -> None:
+def test_algorithm_replay_fires_while_tracking_when_fixed_cat_center_is_in_zone() -> None:
     fixed_bbox = BoundingBox(80, 80, 30, 30)
     turret_off_center_bbox = BoundingBox(140, 90, 20, 20)
     pairs = pair_fixed_with_nearest_turret(
@@ -147,8 +148,8 @@ def test_algorithm_replay_does_not_fire_when_turret_is_not_centered() -> None:
         zones=[_zone()],
     )
 
-    assert summary.fire_count == 0
-    assert not any(row.fire_commanded for row in summary.rows)
+    assert summary.fire_count == 1
+    assert [row.fire_commanded for row in summary.rows].count(True) == 1
     assert not any(row.turret_aim_locked for row in summary.rows)
     assert any(row.tracking_commanded for row in summary.rows)
     assert any(row.applied_pan_delta is not None for row in summary.rows)
