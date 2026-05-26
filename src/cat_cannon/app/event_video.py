@@ -60,6 +60,7 @@ class TurretEventRecorder:
         self._frame_remainder = 0.0
         self._frame_count = 0
         self._last_zone_at: float | None = None
+        self._last_activity_at: float | None = None
         self._positive_count = 0
         self._confirmed = False
         self._shot_count = 0
@@ -69,6 +70,10 @@ class TurretEventRecorder:
         self._counter_confirmed_count = 0
         self._target_visible_count = 0
         self._aim_locked_count = 0
+        self._turret_target_visible_count = 0
+        self._turret_fire_aligned_count = 0
+        self._turret_direction_aligned_count = 0
+        self._fire_permitted_count = 0
 
     @property
     def is_recording(self) -> bool:
@@ -105,6 +110,9 @@ class TurretEventRecorder:
                 reason="shot" if shot_commanded else "zone",
             )
 
+        event_activity = cat_in_zone or shot_commanded or step_result.turret_target_visible
+        if event_activity:
+            self._last_activity_at = now_s
         if cat_in_zone:
             self._record_zone_detection(now=now_s, zone_id=step_result.active_zone_id)
         self._record_step_diagnostics(step_result)
@@ -139,7 +147,11 @@ class TurretEventRecorder:
         reason: str,
     ) -> None:
         height, width = turret_frame.shape[:2]
-        self._frame_size = (int(width), int(height))
+        self._frame_size = _recording_frame_size(
+            width=int(width),
+            height=int(height),
+            max_width=self.config.max_width,
+        )
         self._started_at = now
         self._last_shot_at = None
         self._last_frame_at = None
@@ -147,6 +159,7 @@ class TurretEventRecorder:
         self._frame_remainder = 0.0
         self._frame_count = 0
         self._last_zone_at = None
+        self._last_activity_at = None
         self._positive_count = 0
         self._confirmed = False
         self._shot_count = 0
@@ -189,6 +202,14 @@ class TurretEventRecorder:
             self._target_visible_count += 1
         if step_result.aim_locked:
             self._aim_locked_count += 1
+        if step_result.turret_target_visible:
+            self._turret_target_visible_count += 1
+        if step_result.turret_fire_aligned:
+            self._turret_fire_aligned_count += 1
+        if step_result.turret_direction_aligned:
+            self._turret_direction_aligned_count += 1
+        if step_result.fire_permitted:
+            self._fire_permitted_count += 1
 
     def _write_frame(self, *, cv2: Any, turret_frame: Any, now: float) -> None:
         if self._writer is None or self._frame_size is None:
@@ -229,11 +250,13 @@ class TurretEventRecorder:
             return True
         if not self._confirmed:
             return False
-        if self._last_zone_at is None:
-            zone_lost = True
+        if self._last_activity_at is None:
+            activity_lost = True
         else:
-            zone_lost = now - self._last_zone_at >= max(0.0, self.config.zone_lost_seconds)
-        if not zone_lost:
+            activity_lost = (
+                now - self._last_activity_at >= max(0.0, self.config.zone_lost_seconds)
+            )
+        if not activity_lost:
             return False
         if self._last_shot_at is None:
             return True
@@ -266,6 +289,10 @@ class TurretEventRecorder:
         human_present_count = self._human_present_count
         target_visible_count = self._target_visible_count
         aim_locked_count = self._aim_locked_count
+        turret_target_visible_count = self._turret_target_visible_count
+        turret_fire_aligned_count = self._turret_fire_aligned_count
+        turret_direction_aligned_count = self._turret_direction_aligned_count
+        fire_permitted_count = self._fire_permitted_count
         if writer is not None and last_frame is not None:
             min_frames = max(1, int(math.ceil(max(duration, MIN_PLAYABLE_SECONDS) * self.fps)))
             for _ in range(max(0, min_frames - frame_count)):
@@ -284,7 +311,11 @@ class TurretEventRecorder:
             f"zone={zone_id} confirmed={positive_count} shots={shot_count} "
             f"duration={duration:.1f}s reason={reason} block={block_reason} "
             f"human={human_present_count} target_visible={target_visible_count} "
-            f"aim_locked={aim_locked_count} states={state_counts}"
+            f"aim_locked={aim_locked_count} "
+            f"turret_target={turret_target_visible_count} "
+            f"turret_aligned={turret_fire_aligned_count} "
+            f"turret_direction={turret_direction_aligned_count} "
+            f"fire_permitted={fire_permitted_count} states={state_counts}"
         )
         print(f"[event-video] finalized path={video_path} {content}", flush=True)
         self.publisher.publish(video_path, content)
@@ -299,6 +330,14 @@ class TurretEventRecorder:
             return "target_not_visible"
         if self._counter_confirmed_count == 0:
             return "counter_not_confirmed"
+        if self._turret_target_visible_count == 0:
+            return "turret_target_missing"
+        if self._turret_fire_aligned_count == 0:
+            return "turret_not_aligned"
+        if self._turret_direction_aligned_count == 0:
+            return "turret_direction_mismatch"
+        if self._fire_permitted_count == 0:
+            return "fire_not_permitted"
         if self._aim_locked_count == 0:
             return "aim_never_locked"
         return "fire_not_commanded"
@@ -321,6 +360,7 @@ class TurretEventRecorder:
         self._frame_remainder = 0.0
         self._frame_count = 0
         self._last_zone_at = None
+        self._last_activity_at = None
         self._positive_count = 0
         self._confirmed = False
         self._shot_count = 0
@@ -333,6 +373,10 @@ class TurretEventRecorder:
         self._counter_confirmed_count = 0
         self._target_visible_count = 0
         self._aim_locked_count = 0
+        self._turret_target_visible_count = 0
+        self._turret_fire_aligned_count = 0
+        self._turret_direction_aligned_count = 0
+        self._fire_permitted_count = 0
 
 
 class DiscordWebhookPublisher:
@@ -447,10 +491,27 @@ def build_event_video_recorder(
     publisher: EventVideoPublisher | None = None
     if webhook_url:
         try:
-            publisher = DiscordWebhookPublisher(webhook_url=webhook_url)
+            publisher = DiscordWebhookPublisher(
+                webhook_url=webhook_url,
+                max_upload_mb=config.discord_max_upload_mb,
+            )
         except ValueError as exc:
             print(f"[event-video] Discord upload disabled: {exc}", flush=True)
-    return TurretEventRecorder(config=config, fps=fps, publisher=publisher)
+    recording_fps = config.video_fps if config.video_fps is not None else fps
+    return TurretEventRecorder(config=config, fps=recording_fps, publisher=publisher)
+
+
+def _recording_frame_size(
+    *,
+    width: int,
+    height: int,
+    max_width: int | None,
+) -> tuple[int, int]:
+    if max_width is None or max_width <= 0 or width <= max_width:
+        return int(width), int(height)
+    scale = max_width / width
+    scaled_height = max(1, int(round(height * scale)))
+    return int(max_width), scaled_height
 
 
 def _validated_discord_webhook_url(webhook_url: str) -> str:

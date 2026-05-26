@@ -33,13 +33,35 @@ def test_controller_sends_expected_fire_command() -> None:
     assert transport.writes == [b'{"seq":1,"command":"fire","payload":{"duration_ms":140}}\n']
 
 
+def test_controller_caches_last_status_payload() -> None:
+    transport = FakeSerial(
+        [
+            b'{"ok":true,"seq":1,"status":"heartbeat","payload":{"pan_deg":88.5,"tilt_deg":91.0}}\n'
+        ]
+    )
+    controller = RP2040SerialController(transport=transport)
+
+    controller.heartbeat()
+
+    assert controller.last_status_payload == {"pan_deg": 88.5, "tilt_deg": 91.0}
+
+
 def test_controller_sends_expected_set_fire_output_command() -> None:
-    transport = FakeSerial([b'{"ok":true,"seq":1,"status":"fire_output_set","payload":{"solenoid_active":true}}\n'])
+    transport = FakeSerial(
+        [
+            (
+                b'{"ok":true,"seq":1,"status":"fire_output_set",'
+                b'"payload":{"solenoid_active":true}}\n'
+            )
+        ]
+    )
     controller = RP2040SerialController(transport=transport)
 
     controller.set_fire_output(True)
 
-    assert transport.writes == [b'{"seq":1,"command":"set_fire_output","payload":{"active":true}}\n']
+    assert transport.writes == [
+        b'{"seq":1,"command":"set_fire_output","payload":{"active":true}}\n'
+    ]
 
 
 def test_controller_sends_expected_servo_limits_command() -> None:

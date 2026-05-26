@@ -134,9 +134,9 @@ def test_algorithm_replay_fires_when_zone_confirmed_and_turret_centered() -> Non
     assert not any(row.tracking_commanded for row in summary.rows)
 
 
-def test_algorithm_replay_fires_while_tracking_when_fixed_cat_center_is_in_zone() -> None:
+def test_algorithm_replay_tracks_but_does_not_fire_until_turret_aim_locks() -> None:
     fixed_bbox = BoundingBox(80, 80, 30, 30)
-    turret_off_center_bbox = BoundingBox(140, 90, 20, 20)
+    turret_off_center_bbox = BoundingBox(125, 90, 20, 20)
     pairs = pair_fixed_with_nearest_turret(
         [_sample("fixed", 1000 + index, fixed_bbox) for index in range(6)],
         [_sample("turret", 1000 + index, turret_off_center_bbox) for index in range(6)],
@@ -148,9 +148,9 @@ def test_algorithm_replay_fires_while_tracking_when_fixed_cat_center_is_in_zone(
         zones=[_zone()],
     )
 
-    assert summary.fire_count == 1
-    assert [row.fire_commanded for row in summary.rows].count(True) == 1
+    assert summary.fire_count == 0
+    assert not any(row.fire_commanded for row in summary.rows)
     assert not any(row.turret_aim_locked for row in summary.rows)
     assert any(row.tracking_commanded for row in summary.rows)
     assert any(row.applied_pan_delta is not None for row in summary.rows)
-    assert summary.rows[0].turret_error_x_px == 50.0
+    assert summary.rows[0].turret_error_x_px == 35.0

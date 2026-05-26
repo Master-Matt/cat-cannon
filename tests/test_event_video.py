@@ -6,13 +6,15 @@ from cat_cannon.app.event_video import (
     DiscordWebhookPublisher,
     EventRecordingConfig,
     TurretEventRecorder,
+    build_event_video_recorder,
 )
 from cat_cannon.app.supervisor import SupervisorStepResult
 from cat_cannon.domain.models import SupervisorState
 
 
 class FakeFrame:
-    shape = (480, 640, 3)
+    def __init__(self, *, width: int = 640, height: int = 480) -> None:
+        self.shape = (height, width, 3)
 
 
 class FakeWriter:
@@ -33,6 +35,7 @@ class FakeWriter:
 class FakeCv2:
     def __init__(self) -> None:
         self.writers: list[FakeWriter] = []
+        self.writer_sizes: list[tuple[int, int]] = []
 
     def VideoWriter_fourcc(self, *codec: str) -> int:
         return 1234
@@ -40,8 +43,13 @@ class FakeCv2:
     def VideoWriter(self, path: str, fourcc: int, fps: float, size: tuple[int, int]) -> FakeWriter:
         writer = FakeWriter()
         self.writers.append(writer)
+        self.writer_sizes.append(size)
         Path(path).touch()
         return writer
+
+    def resize(self, frame: FakeFrame, size: tuple[int, int]) -> FakeFrame:
+        width, height = size
+        return FakeFrame(width=width, height=height)
 
 
 class FakePublisher:
@@ -59,6 +67,10 @@ def _result(
     state: SupervisorState | None = None,
     human: bool = False,
     aim_locked: bool | None = None,
+    turret_target: bool = False,
+    turret_aligned: bool = False,
+    turret_direction_aligned: bool = False,
+    fire_permitted: bool = False,
 ) -> SupervisorStepResult:
     return SupervisorStepResult(
         state=state or (SupervisorState.FIRE if fire else SupervisorState.TRACKING),
@@ -70,6 +82,10 @@ def _result(
         active_zone_id=zone,
         candidate_track_id="cat-1" if zone is not None else None,
         correction=None,
+        turret_target_visible=turret_target,
+        turret_fire_aligned=turret_aligned,
+        turret_direction_aligned=turret_direction_aligned,
+        fire_permitted=fire_permitted,
     )
 
 
@@ -367,6 +383,109 @@ def test_turret_event_recorder_preserves_wall_clock_duration_for_sparse_updates(
 
     assert cv2.writers[0].released is True
     assert len(cv2.writers[0].frames) >= 160
+
+
+def test_turret_event_recorder_scales_recorded_frames_to_configured_width(
+    tmp_path: Path,
+) -> None:
+    cv2 = FakeCv2()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            max_width=320,
+            zone_confirm_detections=1,
+            zone_lost_seconds=0.1,
+        ),
+        fps=10,
+    )
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(width=640, height=480),
+        step_result=_result(zone="counter"),
+        now=0.0,
+    )
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(width=640, height=480),
+        step_result=_result(zone=None),
+        now=0.2,
+    )
+
+    assert cv2.writer_sizes == [(320, 240)]
+    assert cv2.writers[0].frames[0].shape == (240, 320, 3)
+
+
+def test_build_event_video_recorder_uses_configured_fps_and_upload_limit() -> None:
+    recorder = build_event_video_recorder(
+        EventRecordingConfig(
+            enabled=True,
+            video_fps=10,
+            discord_webhook_url="https://discord.com/api/webhooks/123/token",
+            discord_max_upload_mb=8,
+        ),
+        fps=30,
+    )
+
+    assert recorder is not None
+    assert recorder.fps == 10
+    assert isinstance(recorder.publisher, DiscordWebhookPublisher)
+    assert recorder.publisher.max_upload_bytes == 8 * 1024 * 1024
+
+
+def test_turret_event_recorder_extends_while_turret_target_stays_visible_after_shot(
+    tmp_path: Path,
+) -> None:
+    cv2 = FakeCv2()
+    publisher = FakePublisher()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            post_shot_seconds=15.0,
+            zone_lost_seconds=5.0,
+        ),
+        fps=10,
+        publisher=publisher,
+    )
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone="counter", fire=True, turret_target=True, turret_aligned=True),
+        now=0.0,
+    )
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone=None, turret_target=True, turret_aligned=True),
+        now=16.0,
+    )
+
+    assert publisher.published == []
+    assert cv2.writers[0].released is False
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone=None, turret_target=False, turret_aligned=False),
+        now=20.9,
+    )
+    assert publisher.published == []
+    assert cv2.writers[0].released is False
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone=None, turret_target=False, turret_aligned=False),
+        now=21.1,
+    )
+
+    assert cv2.writers[0].released is True
+    assert len(publisher.published) == 1
+    assert "shots=1" in publisher.published[0][1]
+    assert "turret_target=2" in publisher.published[0][1]
 
 
 class FakeResponse:

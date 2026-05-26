@@ -42,6 +42,11 @@ class RP2040SerialController(TurretController):
     _sequence: int = field(default=0, init=False)
     _io_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _max_noise_lines: int = field(default=8, init=False, repr=False)
+    _last_status_payload: dict[str, object] = field(default_factory=dict, init=False, repr=False)
+
+    @property
+    def last_status_payload(self) -> dict[str, object]:
+        return dict(self._last_status_payload)
 
     @classmethod
     def open(
@@ -50,7 +55,7 @@ class RP2040SerialController(TurretController):
         baudrate: int = 115200,
         timeout: float = 0.5,
         fire_pulse_ms: int = 120,
-    ) -> "RP2040SerialController":
+    ) -> RP2040SerialController:
         if serial is None:  # pragma: no cover
             raise RuntimeError("pyserial is required to open the RP2040 serial controller.")
         resolved_port = port or autodetect_port()
@@ -134,13 +139,17 @@ class RP2040SerialController(TurretController):
             request = build_request(self._sequence, command, **payload)
             self.transport.write(request.to_wire())
             response = self._read_response(command=command, sequence=self._sequence)
-        if not response.ok:
-            raise RP2040ProtocolError(
-                f"RP2040 command '{command}' failed with status '{response.status}': {response.payload}"
-            )
         if response.sequence != self._sequence:
             raise RP2040ProtocolError(
-                f"RP2040 response sequence mismatch: expected {self._sequence}, got {response.sequence}"
+                "RP2040 response sequence mismatch: "
+                f"expected {self._sequence}, got {response.sequence}"
+            )
+        if isinstance(response.payload, dict):
+            self._last_status_payload = dict(response.payload)
+        if not response.ok:
+            raise RP2040ProtocolError(
+                f"RP2040 command '{command}' failed with status "
+                f"'{response.status}': {response.payload}"
             )
         return response
 

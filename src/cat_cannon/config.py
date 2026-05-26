@@ -56,6 +56,9 @@ class TrackingTuning:
     pan_clamp_deg: float = 3.0
     deadband_deg: float = 0.1
     frame_wait_ms: int = 10
+    fire_requires_turret_target: bool = True
+    fire_aim_tolerance_px: float = 45.0
+    fire_pan_tolerance_deg: float = 12.0
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,9 @@ class EventRecordingConfig:
     zone_confirm_detections: int = 20
     zone_lost_seconds: float = 5.0
     max_event_seconds: float = 180.0
+    video_fps: float | None = None
+    max_width: int | None = None
+    discord_max_upload_mb: float = 8.0
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
 
@@ -188,6 +194,15 @@ def load_system_config(path: str | Path) -> SystemConfig:
             pan_clamp_deg=float(tuning.get("pan_clamp_deg", 3.0)),
             deadband_deg=float(tuning.get("deadband_deg", 0.1)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
+            fire_requires_turret_target=bool(
+                tuning.get("fire_requires_turret_target", True)
+            ),
+            fire_aim_tolerance_px=max(
+                0.0, float(tuning.get("fire_aim_tolerance_px", 45.0))
+            ),
+            fire_pan_tolerance_deg=max(
+                0.0, float(tuning.get("fire_pan_tolerance_deg", 12.0))
+            ),
         ),
         human_lockout=_human_lockout_config_from_raw(raw),
         servo_limits=servo_limits,
@@ -436,6 +451,12 @@ def _event_recording_config_from_raw(raw: dict) -> EventRecordingConfig:
         zone_confirm_detections=int(event.get("zone_confirm_detections", 20)),
         zone_lost_seconds=float(event.get("zone_lost_seconds", 5.0)),
         max_event_seconds=float(event.get("max_event_seconds", 180.0)),
+        video_fps=_optional_float(event.get("video_fps")),
+        max_width=_optional_int(event.get("max_width")),
+        discord_max_upload_mb=max(
+            1.0,
+            float(event.get("discord_max_upload_mb", 8.0)),
+        ),
         discord_webhook_url=str(event.get("discord_webhook_url", "") or ""),
         discord_webhook_env=str(
             event.get("discord_webhook_env", "CAT_CANNON_DISCORD_WEBHOOK_URL")
@@ -519,6 +540,12 @@ def _optional_float(value) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _optional_int(value) -> int | None:
+    if value is None:
+        return None
+    return int(value)
 
 
 def _frame_size(raw_frame: object) -> tuple[float | None, float | None]:

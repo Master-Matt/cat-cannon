@@ -151,6 +151,10 @@ event_recording:
   zone_confirm_seconds: 5
   zone_confirm_detections: 20
   zone_lost_seconds: 5
+  max_event_seconds: 180
+  video_fps: 10
+  max_width: 640
+  discord_max_upload_mb: 8
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
 ```
 
@@ -162,9 +166,10 @@ export CAT_CANNON_DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
 
 The recorder starts tentatively on the first in-zone cat update, keeps the clip only after at least
 `zone_confirm_detections` positive updates arrive within `zone_confirm_seconds`, and then waits for
-`zone_lost_seconds` without an in-zone detection before stopping. Finished clips are posted with
-mentions disabled and are also kept under `data/event_videos`. The event recorder reads config at
-app startup, so restart the app after changing `configs/app.yaml`.
+`zone_lost_seconds` without in-zone or turret-target activity before stopping. Finished clips are
+posted with mentions disabled and are also kept under `data/event_videos`. Use `video_fps`,
+`max_width`, and `discord_max_upload_mb` to keep clips under the webhook upload cap. The event
+recorder reads config at app startup, so restart the app after changing `configs/app.yaml`.
 
 Synthetic smoke-test expectation:
 

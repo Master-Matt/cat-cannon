@@ -37,6 +37,14 @@ def test_example_config_uses_small_servo_command_deadband() -> None:
     assert config.tracking_tuning.deadband_deg == 0.1
 
 
+def test_example_config_requires_turret_target_for_firing() -> None:
+    config = load_system_config("configs/app.example.yaml")
+
+    assert config.tracking_tuning.fire_requires_turret_target is True
+    assert config.tracking_tuning.fire_aim_tolerance_px == 45
+    assert config.tracking_tuning.fire_pan_tolerance_deg == 12
+
+
 def test_system_config_can_use_wall_clock_fire_cooldown(tmp_path: Path) -> None:
     config_path = tmp_path / "app.yaml"
     config_path.write_text(
@@ -415,6 +423,9 @@ event_recording:
   zone_confirm_detections: 20
   zone_lost_seconds: 5
   max_event_seconds: 120
+  video_fps: 10
+  max_width: 640
+  discord_max_upload_mb: 8
   discord_webhook_env: CAT_CANNON_TEST_WEBHOOK
 """,
         encoding="utf-8",
@@ -430,5 +441,8 @@ event_recording:
         zone_confirm_detections=20,
         zone_lost_seconds=5.0,
         max_event_seconds=120.0,
+        video_fps=10.0,
+        max_width=640,
+        discord_max_upload_mb=8.0,
         discord_webhook_env="CAT_CANNON_TEST_WEBHOOK",
     )

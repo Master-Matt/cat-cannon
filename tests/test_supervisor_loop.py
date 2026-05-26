@@ -1,12 +1,15 @@
 from cat_cannon.adapters.controller import NullTurretController
 from cat_cannon.app.supervisor import SupervisorLoop
-from cat_cannon.config import SystemConfig
+from cat_cannon.config import ServoLimits, SystemConfig
 from cat_cannon.domain.models import BoundingBox, CounterZone, Detection, Point, SupervisorState
 from cat_cannon.domain.safety import DetectionPolicy
 from cat_cannon.domain.targeting import TrackingCalibration
 
 
-def _supervisor() -> tuple[SupervisorLoop, NullTurretController]:
+def _supervisor(
+    *,
+    servo_limits: ServoLimits | None = None,
+) -> tuple[SupervisorLoop, NullTurretController]:
     controller = NullTurretController()
     config = SystemConfig(
         cooldown_frames=2,
@@ -26,6 +29,7 @@ def _supervisor() -> tuple[SupervisorLoop, NullTurretController]:
             aim_offset_x_px=0,
             aim_offset_y_px=0,
         ),
+        servo_limits=servo_limits or ServoLimits(),
     )
     zones = [
         CounterZone(
@@ -271,7 +275,7 @@ def test_supervisor_logs_zone_activation_and_fire(capsys) -> None:
     assert "fire_commanded zone=counter" in output
 
 
-def test_supervisor_fires_while_tracking_when_fixed_cat_center_is_confirmed() -> None:
+def test_supervisor_does_not_fire_without_turret_cat_when_turret_camera_available() -> None:
     supervisor, controller = _supervisor()
 
     for _ in range(3):
@@ -288,12 +292,118 @@ def test_supervisor_fires_while_tracking_when_fixed_cat_center_is_confirmed() ->
     assert result.counter_confirmed is True
     assert result.target_visible is True
     assert result.aim_locked is False
-    assert result.fire_commanded is True
+    assert result.turret_target_visible is False
+    assert result.fire_permitted is False
+    assert result.fire_commanded is False
+    assert controller.fired == 0
+
+
+def test_supervisor_does_not_fire_at_off_center_turret_cat() -> None:
+    supervisor, controller = _supervisor()
+    off_center_turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
+
+    for _ in range(3):
+        result = supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[off_center_turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+        )
+
+    assert result.counter_confirmed is True
+    assert result.turret_target_visible is True
+    assert result.turret_fire_aligned is False
+    assert result.fire_permitted is False
+    assert result.fire_commanded is False
+    assert controller.fired == 0
+
+
+def test_supervisor_does_not_fire_inside_wide_gate_until_aim_locked() -> None:
+    supervisor, controller = _supervisor()
+    near_center_turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(125, 90, 20, 20))
+
+    for _ in range(4):
+        result = supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[near_center_turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+        )
+
+    assert result.counter_confirmed is True
+    assert result.turret_target_visible is True
+    assert result.turret_fire_aligned is True
+    assert result.aim_locked is False
+    assert result.fire_permitted is False
+    assert result.fire_commanded is False
+    assert controller.fired == 0
+
+
+def test_supervisor_fires_when_fixed_cat_and_turret_cat_are_aligned() -> None:
+    supervisor, controller = _supervisor()
+    centered_turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(90, 90, 20, 20))
+
+    for _ in range(4):
+        result = supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[centered_turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+        )
+
+    assert result.counter_confirmed is True
+    assert result.turret_target_visible is True
+    assert result.turret_fire_aligned is True
+    assert result.fire_permitted is True
     assert controller.fired == 1
+
+
+def test_supervisor_does_not_fire_when_pan_is_not_pointed_toward_fixed_cat() -> None:
+    servo_limits = ServoLimits(
+        pan_min_deg=40,
+        pan_max_deg=140,
+        tilt_min_deg=70,
+        tilt_max_deg=110,
+        pan_left_deg=140,
+        pan_right_deg=40,
+        tilt_top_deg=110,
+        tilt_bottom_deg=70,
+    )
+    supervisor, controller = _supervisor(servo_limits=servo_limits)
+    controller.last_status_payload = {"pan_deg": 140.0}
+    centered_turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(90, 90, 20, 20))
+
+    for _ in range(4):
+        result = supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[centered_turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+        )
+
+    assert result.counter_confirmed is True
+    assert result.turret_target_visible is True
+    assert result.turret_fire_aligned is True
+    assert result.turret_direction_aligned is False
+    assert result.fire_permitted is False
+    assert controller.fired == 0
 
 
 def test_supervisor_keeps_fixed_confirmation_for_four_missed_frames() -> None:
     supervisor, controller = _supervisor()
+    centered_turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(90, 90, 20, 20))
 
     for _ in range(2):
         result = supervisor.process_frame(
@@ -301,7 +411,7 @@ def test_supervisor_keeps_fixed_confirmation_for_four_missed_frames() -> None:
             frame_width=200,
             frame_height=200,
             armed=True,
-            turret_detections=[],
+            turret_detections=[centered_turret_cat],
             turret_frame_width=200,
             turret_frame_height=200,
         )
@@ -315,7 +425,7 @@ def test_supervisor_keeps_fixed_confirmation_for_four_missed_frames() -> None:
             frame_width=200,
             frame_height=200,
             armed=True,
-            turret_detections=[],
+            turret_detections=[centered_turret_cat],
             turret_frame_width=200,
             turret_frame_height=200,
         )
@@ -375,6 +485,7 @@ def test_supervisor_drops_fixed_confirmation_on_fifth_missed_frame() -> None:
 
 def test_supervisor_ignores_single_rogue_human_detection_for_fire_permission() -> None:
     supervisor, controller = _supervisor()
+    centered_turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(90, 90, 20, 20))
 
     for _ in range(2):
         supervisor.process_frame(
@@ -382,7 +493,7 @@ def test_supervisor_ignores_single_rogue_human_detection_for_fire_permission() -
             frame_width=200,
             frame_height=200,
             armed=True,
-            turret_detections=[],
+            turret_detections=[centered_turret_cat],
             turret_frame_width=200,
             turret_frame_height=200,
         )
@@ -392,7 +503,7 @@ def test_supervisor_ignores_single_rogue_human_detection_for_fire_permission() -
         frame_width=200,
         frame_height=200,
         armed=True,
-        turret_detections=[],
+        turret_detections=[centered_turret_cat],
         turret_frame_width=200,
         turret_frame_height=200,
         now=0.1,
@@ -401,11 +512,26 @@ def test_supervisor_ignores_single_rogue_human_detection_for_fire_permission() -
     assert result.human_present is False
     assert result.counter_confirmed is True
     assert result.state != SupervisorState.HUMAN_LOCKOUT
-    assert controller.fired >= 1
+    assert result.fire_permitted is True
+
+    fired = supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[centered_turret_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.2,
+    )
+
+    assert fired.fire_commanded is True
+    assert controller.fired == 1
 
 
 def test_supervisor_requires_five_human_frames_before_lockout_blocks_fire() -> None:
     supervisor, controller = _supervisor()
+    centered_turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(90, 90, 20, 20))
 
     for _ in range(2):
         supervisor.process_frame(
@@ -413,7 +539,7 @@ def test_supervisor_requires_five_human_frames_before_lockout_blocks_fire() -> N
             frame_width=200,
             frame_height=200,
             armed=True,
-            turret_detections=[],
+            turret_detections=[centered_turret_cat],
             turret_frame_width=200,
             turret_frame_height=200,
         )
@@ -424,7 +550,7 @@ def test_supervisor_requires_five_human_frames_before_lockout_blocks_fire() -> N
             frame_width=200,
             frame_height=200,
             armed=True,
-            turret_detections=[],
+            turret_detections=[centered_turret_cat],
             turret_frame_width=200,
             turret_frame_height=200,
             now=index * 0.1,

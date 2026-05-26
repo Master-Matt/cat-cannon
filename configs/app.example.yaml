@@ -46,6 +46,9 @@ tracking_tuning:
   pan_clamp_deg: 3.0
   deadband_deg: 0.1
   frame_wait_ms: 10
+  fire_requires_turret_target: true
+  fire_aim_tolerance_px: 45
+  fire_pan_tolerance_deg: 12
 
 event_recording:
   enabled: false
@@ -55,5 +58,8 @@ event_recording:
   zone_confirm_detections: 5
   zone_lost_seconds: 5
   max_event_seconds: 180
+  video_fps: 10
+  max_width: 640
+  discord_max_upload_mb: 8
   discord_webhook_url: ''
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
