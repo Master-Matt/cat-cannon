@@ -78,8 +78,13 @@ class SupervisorStateMachine:
                         self._start_fire(now_s)
                         return TransitionResult(self.state, fire_commanded=True)
                     self._reset_burst()
-                if inputs.counter_confirmed and self._fire_ready(inputs):
-                    self.state = SupervisorState.AIM_LOCK
+                if (
+                    inputs.counter_confirmed
+                    and inputs.target_visible
+                    and self._fire_ready(inputs)
+                ):
+                    self._start_fire(now_s)
+                    return TransitionResult(self.state, fire_commanded=True)
                 elif inputs.counter_confirmed and inputs.target_visible:
                     self.state = SupervisorState.TRACKING
                 elif inputs.counter_confirmed:
@@ -113,6 +118,9 @@ class SupervisorStateMachine:
         if self.state == SupervisorState.TRACKING:
             if not inputs.target_visible:
                 self.state = SupervisorState.TURRET_ACQUIRE
+            elif self._fire_ready(inputs):
+                self._start_fire(now_s)
+                return TransitionResult(self.state, fire_commanded=True)
             elif inputs.aim_locked:
                 self.state = SupervisorState.AIM_LOCK
             return TransitionResult(self.state, fire_commanded=False)

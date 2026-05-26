@@ -367,7 +367,7 @@ def test_supervisor_fires_when_fixed_cat_and_turret_cat_are_aligned() -> None:
     assert controller.fired == 1
 
 
-def test_supervisor_does_not_fire_when_pan_is_not_pointed_toward_fixed_cat() -> None:
+def test_supervisor_treats_fixed_pan_direction_as_diagnostic_after_turret_lock() -> None:
     servo_limits = ServoLimits(
         pan_min_deg=40,
         pan_max_deg=140,
@@ -397,8 +397,8 @@ def test_supervisor_does_not_fire_when_pan_is_not_pointed_toward_fixed_cat() -> 
     assert result.turret_target_visible is True
     assert result.turret_fire_aligned is True
     assert result.turret_direction_aligned is False
-    assert result.fire_permitted is False
-    assert controller.fired == 0
+    assert result.fire_permitted is True
+    assert controller.fired == 1
 
 
 def test_supervisor_keeps_fixed_confirmation_for_four_missed_frames() -> None:
@@ -513,19 +513,6 @@ def test_supervisor_ignores_single_rogue_human_detection_for_fire_permission() -
     assert result.counter_confirmed is True
     assert result.state != SupervisorState.HUMAN_LOCKOUT
     assert result.fire_permitted is True
-
-    fired = supervisor.process_frame(
-        [_right_side_cat_detection()],
-        frame_width=200,
-        frame_height=200,
-        armed=True,
-        turret_detections=[centered_turret_cat],
-        turret_frame_width=200,
-        turret_frame_height=200,
-        now=0.2,
-    )
-
-    assert fired.fire_commanded is True
     assert controller.fired == 1
 
 

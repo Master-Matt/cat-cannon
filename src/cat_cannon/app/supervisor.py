@@ -374,8 +374,7 @@ class SupervisorLoop:
         ):
             fire_permitted = (
                 base_fire_permitted
-                and turret_fire_aligned
-                and turret_direction_aligned
+                and turret_target_visible
                 and aim_locked
             )
         else:

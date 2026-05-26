@@ -332,14 +332,10 @@ class TurretEventRecorder:
             return "counter_not_confirmed"
         if self._turret_target_visible_count == 0:
             return "turret_target_missing"
-        if self._turret_fire_aligned_count == 0:
-            return "turret_not_aligned"
-        if self._turret_direction_aligned_count == 0:
-            return "turret_direction_mismatch"
-        if self._fire_permitted_count == 0:
-            return "fire_not_permitted"
         if self._aim_locked_count == 0:
             return "aim_never_locked"
+        if self._fire_permitted_count == 0:
+            return "fire_not_permitted"
         return "fire_not_commanded"
 
     def _format_state_counts(self) -> str:

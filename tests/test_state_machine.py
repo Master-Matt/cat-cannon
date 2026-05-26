@@ -25,16 +25,6 @@ def test_state_machine_advances_to_fire_then_cooldown() -> None:
     )
     assert tracking.state == SupervisorState.TRACKING
 
-    aim_lock = machine.advance(
-        SupervisorInputs(
-            armed=True,
-            human_present=False,
-            counter_confirmed=True,
-            target_visible=True,
-            aim_locked=True,
-        )
-    )
-    assert aim_lock.state == SupervisorState.AIM_LOCK
     fire = machine.advance(
         SupervisorInputs(
             armed=True,
@@ -59,7 +49,7 @@ def test_state_machine_advances_to_fire_then_cooldown() -> None:
     assert cooldown.state == SupervisorState.COOLDOWN
 
 
-def test_state_machine_does_not_fire_if_aim_lock_is_lost_before_fire() -> None:
+def test_state_machine_does_not_fire_when_aim_lock_lacks_fire_permission() -> None:
     machine = SupervisorStateMachine(cooldown_frames=2)
 
     machine.advance(
@@ -80,16 +70,18 @@ def test_state_machine_does_not_fire_if_aim_lock_is_lost_before_fire() -> None:
             aim_locked=False,
         )
     )
-    aim_lock = machine.advance(
+    aim_lock_without_permission = machine.advance(
         SupervisorInputs(
             armed=True,
             human_present=False,
             counter_confirmed=True,
             target_visible=True,
             aim_locked=True,
+            fire_permitted=False,
         )
     )
-    assert aim_lock.state == SupervisorState.AIM_LOCK
+    assert aim_lock_without_permission.state == SupervisorState.AIM_LOCK
+    assert aim_lock_without_permission.fire_commanded is False
 
     lost_lock = machine.advance(
         SupervisorInputs(
@@ -98,6 +90,7 @@ def test_state_machine_does_not_fire_if_aim_lock_is_lost_before_fire() -> None:
             counter_confirmed=True,
             target_visible=True,
             aim_locked=False,
+            fire_permitted=False,
         )
     )
 
@@ -133,12 +126,11 @@ def test_state_machine_can_use_wall_clock_fire_cooldown() -> None:
     )
 
     assert machine.advance(locked, now=0.0).fire_commanded is False
-    assert machine.advance(locked, now=0.1).fire_commanded is False
-    assert machine.advance(locked, now=0.2).fire_commanded is True
+    assert machine.advance(locked, now=0.1).fire_commanded is True
+    assert machine.advance(locked, now=0.2).fire_commanded is False
     assert machine.advance(locked, now=0.3).fire_commanded is False
-    assert machine.advance(locked, now=0.69).state == SupervisorState.COOLDOWN
-    assert machine.advance(locked, now=0.7).state == SupervisorState.AIM_LOCK
-    assert machine.advance(locked, now=0.71).fire_commanded is True
+    assert machine.advance(locked, now=0.59).state == SupervisorState.COOLDOWN
+    assert machine.advance(locked, now=0.6).fire_commanded is True
 
 
 def test_state_machine_fires_configured_burst_after_aim_lock() -> None:
@@ -160,16 +152,14 @@ def test_state_machine_fires_configured_burst_after_aim_lock() -> None:
         machine.advance(locked, now=0.0),
         machine.advance(locked, now=0.1),
         machine.advance(locked, now=0.2),
-        machine.advance(locked, now=0.3),
-        machine.advance(locked, now=0.69),
+        machine.advance(locked, now=0.59),
+        machine.advance(locked, now=0.6),
         machine.advance(locked, now=0.7),
-        machine.advance(locked, now=0.8),
-        machine.advance(locked, now=1.19),
-        machine.advance(locked, now=1.2),
+        machine.advance(locked, now=1.09),
+        machine.advance(locked, now=1.1),
     ]
 
     assert [result.fire_commanded for result in results] == [
-        False,
         False,
         True,
         False,
@@ -204,9 +194,8 @@ def test_state_machine_stops_burst_if_target_disappears() -> None:
     )
 
     assert machine.advance(locked, now=0.0).fire_commanded is False
-    assert machine.advance(locked, now=0.1).fire_commanded is False
-    assert machine.advance(locked, now=0.2).fire_commanded is True
-    assert machine.advance(missing, now=0.3).fire_commanded is False
+    assert machine.advance(locked, now=0.1).fire_commanded is True
+    assert machine.advance(missing, now=0.2).fire_commanded is False
     assert machine.advance(missing, now=0.7).fire_commanded is False
 
 
@@ -224,6 +213,33 @@ def test_state_machine_does_not_start_fire_without_aim_lock_even_when_permitted(
     assert machine.advance(moving_on_counter, now=0.0).fire_commanded is False
     assert machine.advance(moving_on_counter, now=0.1).fire_commanded is False
     assert machine.advance(moving_on_counter, now=0.2).state == SupervisorState.TRACKING
+
+
+def test_state_machine_fires_on_first_locked_frame_when_fire_is_permitted() -> None:
+    machine = SupervisorStateMachine(cooldown_frames=99, cooldown_seconds=0.5)
+    moving = SupervisorInputs(
+        armed=True,
+        human_present=False,
+        counter_confirmed=True,
+        target_visible=True,
+        aim_locked=False,
+        fire_permitted=False,
+    )
+    locked = SupervisorInputs(
+        armed=True,
+        human_present=False,
+        counter_confirmed=True,
+        target_visible=True,
+        aim_locked=True,
+        fire_permitted=True,
+    )
+
+    assert machine.advance(moving, now=0.0).fire_commanded is False
+    assert machine.advance(moving, now=0.1).state == SupervisorState.TRACKING
+    fire = machine.advance(locked, now=0.2)
+
+    assert fire.fire_commanded is True
+    assert fire.state == SupervisorState.FIRE
 
 
 def test_state_machine_leaves_cooldown_tracking_when_lock_is_lost() -> None:
@@ -246,10 +262,9 @@ def test_state_machine_leaves_cooldown_tracking_when_lock_is_lost() -> None:
     )
 
     assert machine.advance(locked, now=0.0).fire_commanded is False
-    assert machine.advance(locked, now=0.1).fire_commanded is False
-    assert machine.advance(locked, now=0.2).fire_commanded is True
-    assert machine.advance(tracking, now=0.3).state == SupervisorState.COOLDOWN
-    assert machine.advance(tracking, now=0.7).state == SupervisorState.TRACKING
+    assert machine.advance(locked, now=0.1).fire_commanded is True
+    assert machine.advance(tracking, now=0.2).state == SupervisorState.COOLDOWN
+    assert machine.advance(tracking, now=0.6).state == SupervisorState.TRACKING
 
 
 def test_state_machine_does_not_fire_while_moving_without_fire_permission() -> None:
