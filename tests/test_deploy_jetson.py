@@ -5,7 +5,6 @@ from cat_cannon.app.deploy_jetson import (
     JetsonDeployConfig,
     build_bootstrap_command,
     build_deploy_steps,
-    build_jetson_gpu_setup_command,
     build_rsync_command,
     build_ssh_command,
 )
@@ -61,10 +60,20 @@ def test_build_bootstrap_command_can_restart_and_install_service() -> None:
     assert "printf '%s\\n' nvidia | sudo -S -p '' sh -lc 'tmpdir=$(mktemp -d)" in command
     assert "DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv" in command
     assert "apt-get update || true" in command
-    assert "printf '%s\\n' nvidia | sudo -S -p '' sh -lc 'cp /opt/cat-cannon/systemd/cat-cannon.service /etc/systemd/system/cat-cannon.service'" in command
+    assert (
+        "printf '%s\\n' nvidia | sudo -S -p '' sh -lc "
+        "'cp /opt/cat-cannon/systemd/cat-cannon.service "
+        "/etc/systemd/system/cat-cannon.service'"
+    ) in command
     assert "printf '%s\\n' nvidia | sudo -S -p '' sh -lc 'systemctl daemon-reload'" in command
-    assert "printf '%s\\n' nvidia | sudo -S -p '' sh -lc 'systemctl enable --now cat-cannon.service'" in command
-    assert "printf '%s\\n' nvidia | sudo -S -p '' sh -lc 'systemctl restart cat-cannon.service'" in command
+    assert (
+        "printf '%s\\n' nvidia | sudo -S -p '' sh -lc "
+        "'systemctl enable --now cat-cannon.service'"
+    ) in command
+    assert (
+        "printf '%s\\n' nvidia | sudo -S -p '' sh -lc "
+        "'systemctl restart cat-cannon.service'"
+    ) in command
 
 
 def test_build_bootstrap_command_can_skip_system_package_bootstrap() -> None:
@@ -86,7 +95,11 @@ def test_build_bootstrap_command_can_skip_system_package_bootstrap() -> None:
     assert "python3 -m venv .venv" in command
 
 
-def test_build_ssh_command_uses_sshpass_prefix_when_password_present() -> None:
+def test_build_ssh_command_uses_sshpass_prefix_when_password_present(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "cat_cannon.app.deploy_jetson.shutil.which",
+        lambda binary: "/usr/bin/sshpass" if binary == "sshpass" else None,
+    )
     config = JetsonDeployConfig(
         host="192.168.55.1",
         user="mdev",
@@ -99,7 +112,11 @@ def test_build_ssh_command_uses_sshpass_prefix_when_password_present() -> None:
         skip_system_packages=False,
     )
 
-    command = build_ssh_command(config, control_path="/tmp/cat-cannon-ctrl", remote_command="echo ok")
+    command = build_ssh_command(
+        config,
+        control_path="/tmp/cat-cannon-ctrl",
+        remote_command="echo ok",
+    )
 
     assert command[:3] == ["sshpass", "-p", "nvidia"]
     assert "mdev@192.168.55.1" in command
@@ -149,7 +166,13 @@ def test_build_deploy_steps_returns_named_phases() -> None:
     steps, close_command = build_deploy_steps(config, control_path="/tmp/cat-cannon-test/control")
 
     assert [step.name for step in steps] == [
-        "ssh-bootstrap", "rsync", "seed-configs", "remote-bootstrap", "jetson-gpu-setup", "udev-install", "desktop-shortcut",
+        "ssh-bootstrap",
+        "rsync",
+        "seed-configs",
+        "remote-bootstrap",
+        "jetson-gpu-setup",
+        "udev-install",
+        "desktop-shortcut",
     ]
     assert steps[0].command[0] == "ssh"
     assert steps[1].command[0] == "rsync"
