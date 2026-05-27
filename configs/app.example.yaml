@@ -61,5 +61,6 @@ event_recording:
   video_fps: 10
   max_width: 640
   discord_max_upload_mb: 8
+  publish_requires_shot: true
   discord_webhook_url: ''
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL

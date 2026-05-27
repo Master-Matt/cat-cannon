@@ -426,6 +426,7 @@ event_recording:
   video_fps: 10
   max_width: 640
   discord_max_upload_mb: 8
+  publish_requires_shot: true
   discord_webhook_env: CAT_CANNON_TEST_WEBHOOK
 """,
         encoding="utf-8",
@@ -444,5 +445,6 @@ event_recording:
         video_fps=10.0,
         max_width=640,
         discord_max_upload_mb=8.0,
+        publish_requires_shot=True,
         discord_webhook_env="CAT_CANNON_TEST_WEBHOOK",
     )

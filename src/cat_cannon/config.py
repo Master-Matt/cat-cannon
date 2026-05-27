@@ -79,6 +79,7 @@ class EventRecordingConfig:
     video_fps: float | None = None
     max_width: int | None = None
     discord_max_upload_mb: float = 8.0
+    publish_requires_shot: bool = True
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
 
@@ -457,6 +458,7 @@ def _event_recording_config_from_raw(raw: dict) -> EventRecordingConfig:
             1.0,
             float(event.get("discord_max_upload_mb", 8.0)),
         ),
+        publish_requires_shot=bool(event.get("publish_requires_shot", True)),
         discord_webhook_url=str(event.get("discord_webhook_url", "") or ""),
         discord_webhook_env=str(
             event.get("discord_webhook_env", "CAT_CANNON_DISCORD_WEBHOOK_URL")

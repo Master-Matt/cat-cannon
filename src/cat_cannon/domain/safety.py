@@ -33,6 +33,10 @@ class CounterConfirmation:
         self._missed_frames = 0
         self._confirmed = False
 
+    @property
+    def confirmed(self) -> bool:
+        return self._confirmed
+
     def update(self, cat: Detection | None, is_on_counter: bool) -> bool:
         if cat is None or not is_on_counter:
             return self._record_miss()

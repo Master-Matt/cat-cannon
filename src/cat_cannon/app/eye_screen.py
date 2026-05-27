@@ -424,10 +424,12 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 continue
 
             # Fixed camera: detect at interval for zone confirmation
+            fixed_detection_updated = False
             if _fixed_cam is not None and frame_counter % fixed_detect_interval == 0:
                 ok_fixed, fixed_frame = _fixed_cam.read()
                 if ok_fixed:
                     last_fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
+                    fixed_detection_updated = True
                     if _dataset_recorder is not None and _sys_config is not None:
                         try:
                             _dataset_recorder.maybe_record(
@@ -484,6 +486,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 turret_detections=turret_detections,
                 turret_frame_width=turret_width,
                 turret_frame_height=turret_height,
+                fixed_detections_fresh=fixed_detection_updated,
                 track_people=True,
             )
 

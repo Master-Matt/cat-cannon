@@ -267,6 +267,7 @@ event_recording:
   video_fps: 10
   max_width: 640
   discord_max_upload_mb: 8
+  publish_requires_shot: true
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
 ```
 
@@ -274,10 +275,11 @@ With this enabled, the app starts a tentative turret recording when the fixed ca
 a zone. The clip is kept only after at least `zone_confirm_detections` positive zone updates arrive
 inside `zone_confirm_seconds`; once confirmed, recording stays open until the zone has been quiet
 for `zone_lost_seconds`. If a shot fires or the turret still sees the target, recording stays open
-until activity stops and `post_shot_seconds` have passed since the last shot. Use `video_fps`,
-`max_width`, and `discord_max_upload_mb` to keep longer clips below the Discord webhook upload
-limit. Set `CAT_CANNON_DISCORD_WEBHOOK_URL` on the Jetson to post finished clips to Discord without
-committing the webhook secret.
+until activity stops and `post_shot_seconds` have passed since the last shot. With
+`publish_requires_shot`, no-shot diagnostic clips are kept locally but not posted to Discord. Use
+`video_fps`, `max_width`, and `discord_max_upload_mb` to keep longer clips below the Discord webhook
+upload limit. Set `CAT_CANNON_DISCORD_WEBHOOK_URL` on the Jetson to post finished clips to Discord
+without committing the webhook secret.
 
 Prepare a reviewed dataset for Ultralytics fine-tuning:
 

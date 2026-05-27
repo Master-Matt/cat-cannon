@@ -28,6 +28,7 @@ class SupervisorStepResult:
     turret_fire_aligned: bool = False
     turret_direction_aligned: bool = True
     fire_permitted: bool = False
+    fixed_zone_fresh: bool = True
 
 
 class HumanLockoutHysteresis:
@@ -252,6 +253,7 @@ class SupervisorLoop:
         turret_frame_width: int | None = None,
         turret_frame_height: int | None = None,
         detection_policy_override: DetectionPolicy | None = None,
+        fixed_detections_fresh: bool = True,
         track_people: bool = False,
         now: float | None = None,
     ) -> SupervisorStepResult:
@@ -267,22 +269,26 @@ class SupervisorLoop:
         turret_human_present = False
         if turret_detections is not None:
             turret_human_present = self._find_turret_person(turret_detections, policy) is not None
-        raw_human_present = assessment.human_present or turret_human_present
+        fixed_human_present = assessment.human_present if fixed_detections_fresh else False
+        raw_human_present = fixed_human_present or turret_human_present
         human_present = self._human_lockout.update(
             human_detected=raw_human_present,
             now=now_s,
         )
         human_blocks_fire = human_present
-        counter_confirmed = self._confirmation.update(
-            assessment.candidate_cat,
-            assessment.cat_on_counter and not human_blocks_fire,
-        )
-        if counter_confirmed:
-            if assessment.active_zone_id is not None:
-                self._confirmed_zone_id = assessment.active_zone_id
-            if assessment.candidate_cat is not None:
-                self._confirmed_track_id = assessment.candidate_cat.track_id
+        if fixed_detections_fresh:
+            counter_confirmed = self._confirmation.update(
+                assessment.candidate_cat,
+                assessment.cat_on_counter and not human_blocks_fire,
+            )
         else:
+            counter_confirmed = self._confirmation.confirmed
+        if counter_confirmed:
+            if fixed_detections_fresh and assessment.active_zone_id is not None:
+                self._confirmed_zone_id = assessment.active_zone_id
+            if fixed_detections_fresh and assessment.candidate_cat is not None:
+                self._confirmed_track_id = assessment.candidate_cat.track_id
+        elif fixed_detections_fresh:
             self._confirmed_zone_id = None
             self._confirmed_track_id = None
 
@@ -304,7 +310,8 @@ class SupervisorLoop:
         }
         should_track = target_visible or self._machine.state in tracking_states
         should_lead_from_fixed = (
-            assessment.cat_on_counter
+            fixed_detections_fresh
+            and assessment.cat_on_counter
             and assessment.candidate_cat is not None
             and not human_present
         )
@@ -404,6 +411,11 @@ class SupervisorLoop:
             turret_fire_aligned=turret_fire_aligned,
             turret_direction_aligned=turret_direction_aligned,
             fire_permitted=fire_permitted,
+            fixed_zone_fresh=(
+                fixed_detections_fresh
+                and assessment.active_zone_id is not None
+                and counter_confirmed
+            ),
         )
 
         # Only safe_stop when disarmed; only fire when no human present
@@ -426,6 +438,11 @@ class SupervisorLoop:
             turret_fire_aligned=turret_fire_aligned,
             turret_direction_aligned=turret_direction_aligned,
             fire_permitted=fire_permitted,
+            fixed_zone_fresh=(
+                fixed_detections_fresh
+                and assessment.active_zone_id is not None
+                and counter_confirmed
+            ),
         )
 
     def _log_activation_and_fire(
@@ -443,6 +460,7 @@ class SupervisorLoop:
         turret_fire_aligned: bool,
         turret_direction_aligned: bool,
         fire_permitted: bool,
+        fixed_zone_fresh: bool,
     ) -> None:
         active_zone_id = assessment_active_zone_id if counter_confirmed else None
         if active_zone_id != self._logged_active_zone_id:
@@ -464,7 +482,8 @@ class SupervisorLoop:
                     f"turret_target={turret_target_visible} "
                     f"turret_aligned={turret_fire_aligned} "
                     f"turret_direction={turret_direction_aligned} "
-                    f"fire_permitted={fire_permitted}",
+                    f"fire_permitted={fire_permitted} "
+                    f"fixed_fresh={fixed_zone_fresh}",
                     flush=True,
                 )
             self._logged_active_zone_id = active_zone_id
@@ -485,6 +504,7 @@ class SupervisorLoop:
                 f"turret_aligned={turret_fire_aligned} "
                 f"turret_direction={turret_direction_aligned} "
                 f"fire_permitted={fire_permitted} "
+                f"fixed_fresh={fixed_zone_fresh} "
                 f"correction={correction_text}",
                 flush=True,
             )

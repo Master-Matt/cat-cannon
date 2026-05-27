@@ -1466,6 +1466,7 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 turret_frame_height=(
                     turret_perception.height if turret_perception is not None else None
                 ),
+                fixed_detections_fresh=fixed_detection_updated,
                 detection_policy_override=active_policy if state.track_humans else None,
             )
             if event_recorder is not None and turret_frame is not None:

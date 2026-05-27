@@ -95,12 +95,13 @@ class TurretEventRecorder:
             step_result.active_zone_id is not None
             and step_result.state != SupervisorState.DISARMED
         )
+        fresh_cat_in_zone = cat_in_zone and step_result.fixed_zone_fresh
         shot_commanded = (
             step_result.fire_commanded
             and step_result.state != SupervisorState.DISARMED
         )
         if not self.is_recording:
-            if not cat_in_zone and not shot_commanded:
+            if not fresh_cat_in_zone and not shot_commanded:
                 return None
             self._start(
                 cv2=cv2,
@@ -110,10 +111,14 @@ class TurretEventRecorder:
                 reason="shot" if shot_commanded else "zone",
             )
 
-        event_activity = cat_in_zone or shot_commanded or step_result.turret_target_visible
+        event_activity = (
+            fresh_cat_in_zone
+            or shot_commanded
+            or (self._shot_count > 0 and step_result.turret_target_visible)
+        )
         if event_activity:
             self._last_activity_at = now_s
-        if cat_in_zone:
+        if fresh_cat_in_zone:
             self._record_zone_detection(now=now_s, zone_id=step_result.active_zone_id)
         self._record_step_diagnostics(step_result)
         if step_result.fire_commanded:
@@ -318,7 +323,14 @@ class TurretEventRecorder:
             f"fire_permitted={fire_permitted_count} states={state_counts}"
         )
         print(f"[event-video] finalized path={video_path} {content}", flush=True)
-        self.publisher.publish(video_path, content)
+        if self.config.publish_requires_shot and shot_count <= 0:
+            print(
+                "[event-video] "
+                f"Discord upload skipped; event has no shots: {video_path.name}",
+                flush=True,
+            )
+        else:
+            self.publisher.publish(video_path, content)
         return EventVideoFinalize(video_path=video_path, content=content)
 
     def _block_reason(self, *, shot_count: int) -> str:

@@ -76,6 +76,39 @@ def test_supervisor_loop_returns_tracking_state_and_zone_after_confirmation() ->
     assert len(controller.pan_commands) >= 1
 
 
+def test_supervisor_does_not_confirm_zone_by_replaying_stale_fixed_detection() -> None:
+    supervisor, controller = _supervisor()
+
+    first = supervisor.process_frame(
+        [_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        fixed_detections_fresh=True,
+    )
+    stale_replay = supervisor.process_frame(
+        [_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        fixed_detections_fresh=False,
+    )
+    fresh_second_hit = supervisor.process_frame(
+        [_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        fixed_detections_fresh=True,
+    )
+
+    assert first.counter_confirmed is False
+    assert stale_replay.counter_confirmed is False
+    assert stale_replay.active_zone_id is None
+    assert fresh_second_hit.counter_confirmed is True
+    assert fresh_second_hit.fixed_zone_fresh is True
+    assert controller.fired == 0
+
+
 def test_supervisor_loop_requires_human_hysteresis_before_lockout() -> None:
     supervisor, controller = _supervisor()
 

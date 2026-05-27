@@ -71,6 +71,7 @@ def _result(
     turret_aligned: bool = False,
     turret_direction_aligned: bool = False,
     fire_permitted: bool = False,
+    fixed_zone_fresh: bool = True,
 ) -> SupervisorStepResult:
     return SupervisorStepResult(
         state=state or (SupervisorState.FIRE if fire else SupervisorState.TRACKING),
@@ -86,6 +87,7 @@ def _result(
         turret_fire_aligned=turret_aligned,
         turret_direction_aligned=turret_direction_aligned,
         fire_permitted=fire_permitted,
+        fixed_zone_fresh=fixed_zone_fresh,
     )
 
 
@@ -106,13 +108,19 @@ def test_turret_event_recorder_records_zone_entry_until_cat_leaves_without_shot(
     )
 
     recorder.update(cv2=cv2, turret_frame=FakeFrame(), step_result=_result(zone="counter"), now=0.0)
-    recorder.update(cv2=cv2, turret_frame=FakeFrame(), step_result=_result(zone=None), now=0.2)
+    finalized = recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone=None),
+        now=0.2,
+    )
 
+    assert finalized is not None
     assert cv2.writers[0].released is True
     assert len(cv2.writers[0].frames) >= 30
-    assert len(publisher.published) == 1
-    assert "zone=counter" in publisher.published[0][1]
-    assert "shots=0" in publisher.published[0][1]
+    assert publisher.published == []
+    assert "zone=counter" in finalized.content
+    assert "shots=0" in finalized.content
 
 
 def test_turret_event_recorder_reports_no_shot_block_reason(tmp_path: Path) -> None:
@@ -135,15 +143,16 @@ def test_turret_event_recorder_reports_no_shot_block_reason(tmp_path: Path) -> N
         step_result=_result(zone="counter", aim_locked=False),
         now=0.0,
     )
-    recorder.update(
+    finalized = recorder.update(
         cv2=cv2,
         turret_frame=FakeFrame(),
         step_result=_result(zone=None, state=SupervisorState.HUMAN_LOCKOUT, human=True),
         now=0.2,
     )
 
-    assert len(publisher.published) == 1
-    content = publisher.published[0][1]
+    assert publisher.published == []
+    assert finalized is not None
+    content = finalized.content
     assert "shots=0" in content
     assert "block=human_lockout" in content
     assert "human=1" in content
@@ -180,6 +189,73 @@ def test_turret_event_recorder_discards_unconfirmed_short_detection(
     assert publisher.published == []
     assert cv2.writers[0].released is True
     assert not any(tmp_path.glob("*.mp4"))
+
+
+def test_turret_event_recorder_does_not_confirm_replayed_stale_fixed_zone(
+    tmp_path: Path,
+) -> None:
+    cv2 = FakeCv2()
+    publisher = FakePublisher()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            zone_confirm_seconds=5.0,
+            zone_confirm_detections=2,
+            zone_lost_seconds=0.1,
+        ),
+        fps=10,
+        publisher=publisher,
+    )
+
+    recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone="counter", fixed_zone_fresh=True),
+        now=0.0,
+    )
+    for index in range(1, 6):
+        recorder.update(
+            cv2=cv2,
+            turret_frame=FakeFrame(),
+            step_result=_result(zone="counter", fixed_zone_fresh=False),
+            now=index * 0.5,
+        )
+    finalized = recorder.update(
+        cv2=cv2,
+        turret_frame=FakeFrame(),
+        step_result=_result(zone=None),
+        now=5.1,
+    )
+
+    assert finalized is None
+    assert publisher.published == []
+    assert cv2.writers[0].released is True
+    assert not any(tmp_path.glob("*.mp4"))
+
+
+def test_turret_event_recorder_can_publish_no_shot_events_when_configured(
+    tmp_path: Path,
+) -> None:
+    cv2 = FakeCv2()
+    publisher = FakePublisher()
+    recorder = TurretEventRecorder(
+        config=EventRecordingConfig(
+            enabled=True,
+            output_dir=str(tmp_path),
+            zone_confirm_detections=1,
+            zone_lost_seconds=0.1,
+            publish_requires_shot=False,
+        ),
+        fps=30,
+        publisher=publisher,
+    )
+
+    recorder.update(cv2=cv2, turret_frame=FakeFrame(), step_result=_result(zone="counter"), now=0.0)
+    recorder.update(cv2=cv2, turret_frame=FakeFrame(), step_result=_result(zone=None), now=0.2)
+
+    assert len(publisher.published) == 1
+    assert "shots=0" in publisher.published[0][1]
 
 
 def test_turret_event_recorder_close_discards_unconfirmed_detection(tmp_path: Path) -> None:
@@ -244,9 +320,9 @@ def test_turret_event_recorder_waits_for_zone_lost_hysteresis_after_confirmation
 
     assert finalized is not None
     assert cv2.writers[0].released is True
-    assert len(publisher.published) == 1
-    assert "zone=counter" in publisher.published[0][1]
-    assert "confirmed=20" in publisher.published[0][1]
+    assert publisher.published == []
+    assert "zone=counter" in finalized.content
+    assert "confirmed=20" in finalized.content
 
 
 def test_turret_event_recorder_ignores_disarmed_zone_detections(tmp_path: Path) -> None:
