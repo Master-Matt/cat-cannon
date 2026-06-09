@@ -86,6 +86,7 @@ heartbeat:
   scan_enabled: true           # slow pan back-and-forth scan while idle (vs. one-shot moves)
   scan_pan_speed_deg_s: 10     # how fast the idle scan sweeps
   scan_amplitude_deg: 25       # half-width of the scan band around pan center
+  motion_grace_s: 30           # suppress motion-watchdog restarts this long after startup (warmup)
   discord_webhook_url: ''
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
   restart_reboot_threshold: 3   # this many app restarts within the window -> reboot

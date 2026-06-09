@@ -224,6 +224,122 @@ def _point_in_circle(px: int, py: int, cx: int, cy: int, r: int) -> bool:
     return (px - cx) ** 2 + (py - cy) ** 2 <= r ** 2
 
 
+def _force_x11_fullscreen(
+    window_title: str, *, attempts: int = 40, delay_s: float = 0.25
+) -> None:
+    """Best-effort: make the named highgui window borderless and screen-sized.
+
+    OpenCV's Qt ``WND_PROP_FULLSCREEN`` is not honored cleanly by GNOME/mutter —
+    the window keeps a title bar and ends up 37px too tall (offset/clipped). So
+    we drive the window manager directly: strip decorations via
+    ``_MOTIF_WM_HINTS``, clear any fullscreen state, then size + position the
+    window to exactly cover the root window and raise it. Runs in a background
+    thread because the window is not reparented/named the instant it is shown,
+    so we retry until it appears. No-op if python-xlib is unavailable or there
+    is no X display.
+    """
+    try:
+        from Xlib import X, display
+        from Xlib.protocol import event
+    except Exception:
+        return
+
+    try:
+        d = display.Display()
+    except Exception:
+        return
+
+    root = d.screen().root
+    net_state = d.intern_atom("_NET_WM_STATE")
+    net_fullscreen = d.intern_atom("_NET_WM_STATE_FULLSCREEN")
+    net_active = d.intern_atom("_NET_ACTIVE_WINDOW")
+    motif_hints = d.intern_atom("_MOTIF_WM_HINTS")
+    mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
+
+    try:
+        root_geom = root.get_geometry()
+        screen_w, screen_h = root_geom.width, root_geom.height
+    except Exception:
+        screen_w, screen_h = 0, 0
+
+    def _matches(win):
+        found = []
+        try:
+            if win.get_wm_name() == window_title:
+                found.append(win)
+        except Exception:
+            pass
+        try:
+            for child in win.query_tree().children:
+                found.extend(_matches(child))
+        except Exception:
+            pass
+        return found
+
+    try:
+        # Let cv2's resizeWindow settle before we take over the geometry.
+        time.sleep(1.0)
+        sends = 0
+        for _ in range(attempts):
+            targets = _matches(root)
+            if targets and screen_w and screen_h:
+                def _area(win):
+                    try:
+                        g = win.get_geometry()
+                        return g.width * g.height
+                    except Exception:
+                        return 0
+
+                target = max(targets, key=_area)
+                try:
+                    # Strip window-manager decorations (MWM_HINTS_DECORATIONS,
+                    # decorations = 0 -> none).
+                    target.change_property(
+                        motif_hints, motif_hints, 32, [2, 0, 0, 0, 0]
+                    )
+                    # Clear any cv2-set fullscreen state so our explicit size
+                    # (exactly the screen) is not overridden to a 37px-too-tall
+                    # fullscreen geometry.
+                    root.send_event(
+                        event.ClientMessage(
+                            window=target,
+                            client_type=net_state,
+                            data=(32, [0, net_fullscreen, 0, 1, 0]),
+                        ),
+                        event_mask=mask,
+                    )
+                    d.sync()
+                    target.configure(
+                        x=0,
+                        y=0,
+                        width=screen_w,
+                        height=screen_h,
+                        stack_mode=X.Above,
+                    )
+                    root.send_event(
+                        event.ClientMessage(
+                            window=target,
+                            client_type=net_active,
+                            data=(32, [1, X.CurrentTime, 0, 0, 0]),
+                        ),
+                        event_mask=mask,
+                    )
+                    d.sync()
+                    sends += 1
+                    # Resend a few times so the layout survives any late cv2
+                    # resize/restyle that could re-decorate the window.
+                    if sends >= 3:
+                        return
+                except Exception:
+                    pass
+            time.sleep(delay_s)
+    finally:
+        try:
+            d.close()
+        except Exception:
+            pass
+
+
 def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     """Run the main eye screen. Returns next screen or None to exit."""
     import threading
@@ -244,8 +360,32 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     # Show window IMMEDIATELY before any heavy loading
     window_name = "Cat Cannon"
     cv2.namedWindow(window_name, cv2.WINDOW_GUI_NORMAL)
+    # Realize/map the window by drawing one frame BEFORE applying fullscreen.
+    # Under GNOME/mutter, calling setWindowProperty(WND_PROP_FULLSCREEN) on a
+    # window that has not yet been shown leaves it permanently unmapped — the
+    # GUI never appears on screen. Showing a frame first forces the X window to
+    # map; only then do fullscreen / resize / position requests take effect.
+    _splash = np.zeros((config.window_height, config.window_width, 3), dtype=np.uint8)
+    cv2.imshow(window_name, _splash)
+    cv2.waitKey(50)
     if config.fullscreen:
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        # Do NOT use cv2's own fullscreen property here: under GNOME/mutter it
+        # produces a window 37px too tall and, worse, Qt keeps re-asserting that
+        # geometry on later imshow calls, fighting the clean sizing below. Size
+        # the realized window roughly to the screen (so cv2 scales the canvas
+        # right), then let _force_x11_fullscreen strip decorations and pin it to
+        # exactly cover the screen. Threaded because the window needs a moment
+        # to settle. If python-xlib is unavailable this degrades to a normal
+        # decorated 1024x600 window (still visible).
+        cv2.resizeWindow(window_name, config.window_width, config.window_height)
+        cv2.moveWindow(window_name, 0, 0)
+        cv2.imshow(window_name, _splash)
+        cv2.waitKey(50)
+        threading.Thread(
+            target=_force_x11_fullscreen,
+            args=(window_name,),
+            daemon=True,
+        ).start()
     else:
         cv2.resizeWindow(window_name, config.window_width, config.window_height)
 
@@ -297,6 +437,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         "acc_n": 0,
         "sample_t": 0.0,
         "band_logged": False,
+        "active_t": 0.0,
     }
     _fault_event = threading.Event()
     _fault_reason: dict = {"reason": None}
@@ -477,6 +618,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     )
                 )
                 _hb["active"] = True
+                _hb["active_t"] = time.monotonic()
             if _hb["live"] is not None:
                 _hb["live"].beat()
 
@@ -612,6 +754,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 if (
                     _ctrl is not None
                     and getattr(_cfg, "scan_enabled", True)
+                    and state.armed
                     and state.mode == "idle"
                 ):
                     if not _hb["scanning"]:
@@ -799,13 +942,30 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             time.sleep(0.5)
             if not _hb["active"]:
                 continue
+            if not state.armed:
+                # Disarmed (SAFE): the operator deliberately took the turret
+                # offline, so suppress all heartbeat-driven restarts and keep the
+                # motion watchdog clean so re-arming resumes self-healing fresh.
+                _wd0 = _hb["watchdog"]
+                if _wd0 is not None:
+                    _wd0.reset()
+                continue
             _live = _hb["live"]
             _wd = _hb["watchdog"]
             reason = None
             if _live is not None and _live.is_stale():
                 reason = "hang"
             elif _wd is not None and _wd.tripped:
-                reason = "no_motion"
+                # Suppress motion faults during the startup grace window: right
+                # after activation the camera/servos/model are still warming up,
+                # and faulting here causes a boot-time restart loop that prevents
+                # the GUI from rendering. Keep the watchdog clean until grace ends.
+                _cfg0 = _hb["cfg"]
+                _grace = float(getattr(_cfg0, "motion_grace_s", 0.0))
+                if (time.monotonic() - _hb["active_t"]) < _grace:
+                    _wd.reset()
+                else:
+                    reason = "no_motion"
             if reason is not None:
                 _fault_reason["reason"] = reason
                 _cfg = _hb["cfg"]

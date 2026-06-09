@@ -125,6 +125,11 @@ class HeartbeatConfig:
     scan_enabled: bool = True
     scan_pan_speed_deg_s: float = 10.0
     scan_amplitude_deg: float = 25.0
+    # Startup grace: after the heartbeat first activates (resources loaded, idle
+    # scan begins) the camera, servos and model are still warming up, so suppress
+    # motion-watchdog restarts for this long to avoid a boot-time restart loop
+    # that prevents the GUI from ever rendering.
+    motion_grace_s: float = 30.0
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
     # Guardian / restart-escalation policy.
@@ -323,6 +328,9 @@ def _heartbeat_config_from_raw(raw: dict) -> HeartbeatConfig:
         ),
         scan_amplitude_deg=max(
             1.0, float(heartbeat.get("scan_amplitude_deg", defaults.scan_amplitude_deg))
+        ),
+        motion_grace_s=max(
+            0.0, float(heartbeat.get("motion_grace_s", defaults.motion_grace_s))
         ),
         discord_webhook_url=str(heartbeat.get("discord_webhook_url", "") or ""),
         discord_webhook_env=str(

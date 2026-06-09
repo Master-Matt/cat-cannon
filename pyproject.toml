@@ -21,6 +21,7 @@ dev = [
 ]
 bench = [
   "opencv-python>=4.10.0",
+  "python-xlib>=0.33",
 ]
 vision = [
   "ultralytics>=8.3.0",

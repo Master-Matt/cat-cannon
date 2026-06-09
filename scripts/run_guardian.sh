@@ -10,13 +10,21 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
 
 # --- Singleton: only one guardian at a time ---
+# The pidfile lives in the repo and survives reboots, so after a reboot the
+# stored PID may have been reused by an unrelated process. Only treat the
+# guardian as already running if the live process is actually a cat_cannon
+# guardian — otherwise a reused PID would wrongly block autostart on boot.
 PIDFILE="$ROOT_DIR/.cat-cannon-guardian.pid"
 if [[ -f "$PIDFILE" ]]; then
   OLD_PID=$(cat "$PIDFILE" 2>/dev/null)
-  if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+  if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null \
+     && tr '\0' ' ' < "/proc/$OLD_PID/cmdline" 2>/dev/null \
+        | grep -q "cat_cannon.app.guardian"; then
     echo "Cat Cannon guardian already running (PID $OLD_PID)" >&2
     exit 0
   fi
+  # Stale or reused PID — clear it and continue.
+  rm -f "$PIDFILE"
 fi
 echo $$ > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
