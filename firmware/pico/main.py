@@ -85,7 +85,8 @@ class Controller:
         self.led = Pin(cfg.STATUS_LED_PIN, Pin.OUT)
         self.enabled = False
         self.last_contact_ms = time.ticks_ms()
-        self.last_move_ms = time.ticks_ms()
+        self.pan_last_move_ms = time.ticks_ms()
+        self.tilt_last_move_ms = time.ticks_ms()
         self.fire_until_ms = None
         # Velocity mode: degrees per second for continuous smooth motion
         self.pan_vel = 0.0
@@ -150,34 +151,38 @@ class Controller:
             self.pan_vel = 0.0
             self.tilt_vel = 0.0
 
-        # Apply velocity: continuous servo interpolation at tick rate (~50Hz)
+        # Apply velocity: continuous servo interpolation at tick rate (~50Hz).
+        # Per-axis move timestamps let one axis scan continuously (e.g. a slow
+        # pan sweep) while the other still relaxes on idle.
         if abs(self.pan_vel) > 0.1 or abs(self.tilt_vel) > 0.1:
             dt_s = dt_ms / 1000.0
             pan_delta = self.pan_vel * dt_s
             tilt_delta = self.tilt_vel * dt_s
             if self.pan.blocked_toward(pan_delta):
                 self.pan_vel = 0.0
-                pan_moved = False
-            else:
-                pan_moved = self.pan.delta(pan_delta)
+            elif self.pan.delta(pan_delta):
+                self.pan_last_move_ms = now
             if self.tilt.blocked_toward(tilt_delta):
                 self.tilt_vel = 0.0
-                tilt_moved = False
-            else:
-                tilt_moved = self.tilt.delta(tilt_delta)
-            if pan_moved or tilt_moved:
-                self.last_move_ms = now
+            elif self.tilt.delta(tilt_delta):
+                self.tilt_last_move_ms = now
 
-        # Auto-relax servos after idle period to stop buzzing. The tilt axis is
-        # gravity-loaded, so keep it energized (configurable) to preserve holding
-        # torque and avoid sticky re-engagement; pan may relax freely.
+        # Auto-relax servos after a per-axis idle period to stop buzzing and, for
+        # the gravity-loaded tilt axis, to avoid continuous holding current that
+        # can overheat the servo. Tracking each axis separately means a scanning
+        # pan never forces the idle tilt to stay energized.
         relax_tilt = getattr(cfg, "SERVO_IDLE_RELAX_TILT", True)
-        idle_ms = time.ticks_diff(now, self.last_move_ms)
-        if idle_ms > cfg.SERVO_IDLE_RELAX_MS:
-            if self.pan.attached:
-                self.pan.detach()
-            if relax_tilt and self.tilt.attached:
-                self.tilt.detach()
+        if (
+            self.pan.attached
+            and time.ticks_diff(now, self.pan_last_move_ms) > cfg.SERVO_IDLE_RELAX_MS
+        ):
+            self.pan.detach()
+        if (
+            relax_tilt
+            and self.tilt.attached
+            and time.ticks_diff(now, self.tilt_last_move_ms) > cfg.SERVO_IDLE_RELAX_MS
+        ):
+            self.tilt.detach()
 
     def handle(self, message):
         self.last_contact_ms = time.ticks_ms()
@@ -202,8 +207,11 @@ class Controller:
             if command == "set_angles":
                 pan_moved = self.pan.write(float(payload["pan_deg"]))
                 tilt_moved = self.tilt.write(float(payload["tilt_deg"]))
-                if pan_moved or tilt_moved:
-                    self.last_move_ms = time.ticks_ms()
+                now_ms = time.ticks_ms()
+                if pan_moved:
+                    self.pan_last_move_ms = now_ms
+                if tilt_moved:
+                    self.tilt_last_move_ms = now_ms
                 return self._ok(seq, "angles_set", self._status_payload())
             if command == "set_servo_limits":
                 self._set_servo_limits(payload)
@@ -211,13 +219,20 @@ class Controller:
             if command == "apply_delta":
                 pan_moved = self.pan.delta(float(payload.get("pan_delta_deg", 0.0)))
                 tilt_moved = self.tilt.delta(float(payload.get("tilt_delta_deg", 0.0)))
-                if pan_moved or tilt_moved:
-                    self.last_move_ms = time.ticks_ms()
+                now_ms = time.ticks_ms()
+                if pan_moved:
+                    self.pan_last_move_ms = now_ms
+                if tilt_moved:
+                    self.tilt_last_move_ms = now_ms
                 return self._ok(seq, "delta_applied", self._status_payload())
             if command == "set_velocity":
                 self.pan_vel = float(payload.get("pan_deg_s", 0.0))
                 self.tilt_vel = float(payload.get("tilt_deg_s", 0.0))
-                self.last_move_ms = time.ticks_ms()
+                now_ms = time.ticks_ms()
+                if abs(self.pan_vel) > 0.1:
+                    self.pan_last_move_ms = now_ms
+                if abs(self.tilt_vel) > 0.1:
+                    self.tilt_last_move_ms = now_ms
                 return self._ok(seq, "velocity_set", self._status_payload())
             if command == "relax":
                 self.pan_vel = 0.0

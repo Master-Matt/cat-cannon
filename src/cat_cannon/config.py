@@ -117,6 +117,14 @@ class HeartbeatConfig:
     max_consecutive_motion_failures: int = 3
     pan_flow_sign: int = 1
     tilt_flow_sign: int = 1
+    # Idle "scanning" motion: instead of jerky one-shot moves that relax almost
+    # immediately, the turret pans slowly back and forth across a band centered
+    # in its pan range. Continuous velocity keeps pan energized + moving, so it
+    # never drifts under cord pressure and never snaps back, and the smooth sweep
+    # produces clear optical flow for motion confirmation.
+    scan_enabled: bool = True
+    scan_pan_speed_deg_s: float = 10.0
+    scan_amplitude_deg: float = 25.0
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
     # Guardian / restart-escalation policy.
@@ -309,6 +317,13 @@ def _heartbeat_config_from_raw(raw: dict) -> HeartbeatConfig:
         ),
         pan_flow_sign=_sign(heartbeat.get("pan_flow_sign", defaults.pan_flow_sign)),
         tilt_flow_sign=_sign(heartbeat.get("tilt_flow_sign", defaults.tilt_flow_sign)),
+        scan_enabled=bool(heartbeat.get("scan_enabled", defaults.scan_enabled)),
+        scan_pan_speed_deg_s=max(
+            0.5, float(heartbeat.get("scan_pan_speed_deg_s", defaults.scan_pan_speed_deg_s))
+        ),
+        scan_amplitude_deg=max(
+            1.0, float(heartbeat.get("scan_amplitude_deg", defaults.scan_amplitude_deg))
+        ),
         discord_webhook_url=str(heartbeat.get("discord_webhook_url", "") or ""),
         discord_webhook_env=str(
             heartbeat.get("discord_webhook_env", defaults.discord_webhook_env)

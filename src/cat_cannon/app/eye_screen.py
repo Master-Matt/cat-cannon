@@ -283,9 +283,20 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         "live": None,
         "watchdog": None,
         "active": False,
-        "pending": None,
-        "next_move_t": 0.0,
-        "dir": 1,
+        "scanning": False,
+        "scan_dir": 1,
+        "scan_pos": 0.0,
+        "scan_lo": 0.0,
+        "scan_hi": 0.0,
+        "scan_speed": 0.0,
+        "last_scan_t": 0.0,
+        "prev_gray": None,
+        "acc_dx": 0.0,
+        "acc_dy": 0.0,
+        "acc_mag": 0.0,
+        "acc_n": 0,
+        "sample_t": 0.0,
+        "band_logged": False,
     }
     _fault_event = threading.Event()
     _fault_reason: dict = {"reason": None}
@@ -465,7 +476,6 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                         tilt_flow_sign=_hb_cfg.tilt_flow_sign,
                     )
                 )
-                _hb["next_move_t"] = time.monotonic() + _hb_cfg.move_interval_s
                 _hb["active"] = True
             if _hb["live"] is not None:
                 _hb["live"].beat()
@@ -589,42 +599,191 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 _latest_step_result = step_result
                 _latest_gaze = gaze
 
-            # --- Heartbeat deliberate move + optical-flow confirmation ---
-            if _hb["active"] and turret_gray is not None:
+            # --- Heartbeat: slow scanning pan + optical-flow confirmation ---
+            # Instead of a one-shot move that relaxes almost immediately, the
+            # turret pans slowly back and forth across a band centered in its pan
+            # range (like a scanning turret). Continuous velocity keeps pan
+            # energized + moving, so it never drifts under cord pressure and never
+            # snaps back, and the smooth sweep gives clear optical flow.
+            if _hb["active"]:
+                _cfg = _hb["cfg"]
+                _ctrl = _bg_resources.get("controller")
                 _hb_now = time.monotonic()
-                _pending = _hb["pending"]
-                if _pending is not None:
-                    if _hb_now >= _pending["deadline"]:
-                        try:
-                            from cat_cannon.adapters.optical_flow import mean_flow
-                            _dx, _dy, _ = mean_flow(cv2, _pending["pre_gray"], turret_gray)
-                            _hb["watchdog"].record(
-                                pan_cmd=_pending["pan"],
-                                tilt_cmd=_pending["tilt"],
-                                dx=_dx,
-                                dy=_dy,
+                if (
+                    _ctrl is not None
+                    and getattr(_cfg, "scan_enabled", True)
+                    and state.mode == "idle"
+                ):
+                    if not _hb["scanning"]:
+                        # Begin a centered scan band from the current pan position.
+                        _status = getattr(_ctrl, "last_status_payload", {}) or {}
+                        _pan_min = float(_status.get("pan_min_deg", 0.0))
+                        _pan_max = float(_status.get("pan_max_deg", 180.0))
+                        _pan_now = float(
+                            _status.get("pan_deg", (_pan_min + _pan_max) / 2.0)
+                        )
+                        _amp = max(2.0, float(_cfg.scan_amplitude_deg))
+                        _center = (_pan_min + _pan_max) / 2.0
+                        _margin = 2.0
+                        _lo = max(_pan_min + _margin, _center - _amp)
+                        _hi = min(_pan_max - _margin, _center + _amp)
+                        if _hi <= _lo:
+                            _lo, _hi = _center - 1.0, _center + 1.0
+                        _hb["scan_lo"] = _lo
+                        _hb["scan_hi"] = _hi
+                        _hb["scan_pos"] = min(_hi, max(_lo, _pan_now))
+                        _hb["scan_speed"] = max(1.0, float(_cfg.scan_pan_speed_deg_s))
+                        _pan_sign0 = int(getattr(_ctrl, "pan_delta_sign", 1)) or 1
+                        # Pick a command direction that physically moves *toward*
+                        # the band center (command space is flipped by pan_sign).
+                        _hb["scan_dir"] = (
+                            _pan_sign0 if _hb["scan_pos"] <= _center else -_pan_sign0
+                        )
+                        _hb["last_scan_t"] = _hb_now
+                        _hb["prev_gray"] = turret_gray
+                        _hb["acc_dx"] = 0.0
+                        _hb["acc_dy"] = 0.0
+                        _hb["acc_mag"] = 0.0
+                        _hb["acc_n"] = 0
+                        _hb["sample_t"] = _hb_now + _cfg.confirm_window_s
+                        if not _hb["band_logged"]:
+                            print(
+                                f"[heartbeat] scan band: pan_min={_pan_min:.1f} "
+                                f"pan_max={_pan_max:.1f} pan_now={_pan_now:.1f} "
+                                f"center={_center:.1f} lo={_lo:.1f} hi={_hi:.1f} "
+                                f"speed={_hb['scan_speed']:.1f}",
+                                flush=True,
                             )
+                            _hb["band_logged"] = True
+                        try:
+                            _ctrl.set_velocity(
+                                _hb["scan_speed"] * _hb["scan_dir"], 0.0
+                            )
+                            _hb["scanning"] = True
+                        except Exception:
+                            _hb["scanning"] = False
+                    else:
+                        _dt = max(0.0, _hb_now - _hb["last_scan_t"])
+                        _hb["last_scan_t"] = _hb_now
+                        # Resync host position estimate with the firmware-reported
+                        # angle (no encoder, but the Pico echoes its interpolated
+                        # angle in every status payload) and use its blocked flags
+                        # so we reverse *before* stalling against a limit.
+                        _status = getattr(_ctrl, "last_status_payload", {}) or {}
+                        _rep_pan = _status.get("pan_deg")
+                        if _rep_pan is not None:
+                            _hb["scan_pos"] = float(_rep_pan)
+                        else:
+                            _hb["scan_pos"] += (
+                                _hb["scan_dir"] * _hb["scan_speed"] * _dt
+                            )
+                        _at_max = bool(_status.get("pan_at_max", False))
+                        _at_min = bool(_status.get("pan_at_min", False))
+                        # Command direction maps to physical-angle direction via
+                        # the controller's pan_delta_sign (e.g. +command can drive
+                        # the angle *down* toward pan_min). Reverse against the
+                        # correct physical limit, with a hard safety: if the
+                        # firmware reports it is blocked at *either* limit, flip.
+                        _pan_sign = int(getattr(_ctrl, "pan_delta_sign", 1)) or 1
+                        _phys = _hb["scan_dir"] * _pan_sign
+                        _reversed = False
+                        if _phys > 0 and (_hb["scan_pos"] >= _hb["scan_hi"] or _at_max):
+                            _hb["scan_dir"] = -_hb["scan_dir"]
+                            _reversed = True
+                        elif _phys < 0 and (
+                            _hb["scan_pos"] <= _hb["scan_lo"] or _at_min
+                        ):
+                            _hb["scan_dir"] = -_hb["scan_dir"]
+                            _reversed = True
+                        elif _at_min or _at_max:
+                            _hb["scan_dir"] = -_hb["scan_dir"]
+                            _reversed = True
+                        if _reversed:
+                            try:
+                                _ctrl.set_velocity(
+                                    _hb["scan_speed"] * _hb["scan_dir"], 0.0
+                                )
+                            except Exception:
+                                pass
+                            # Start a fresh measurement window after a reversal so
+                            # accumulated flow never straddles a direction change.
+                            _hb["prev_gray"] = turret_gray
+                            _hb["acc_dx"] = 0.0
+                            _hb["acc_dy"] = 0.0
+                            _hb["acc_mag"] = 0.0
+                            _hb["acc_n"] = 0
+                            _hb["sample_t"] = _hb_now + _cfg.confirm_window_s
+                        elif turret_gray is not None:
+                            # Accumulate flow between *consecutive* frames. Motion
+                            # is confirmed by the mean per-frame flow *magnitude*
+                            # (frame-rate independent, sign-agnostic) rather than a
+                            # strict direction match: with a short pan range and no
+                            # position feedback the sweep reverses often, so the
+                            # robust "is the turret physically moving?" signal is
+                            # sustained camera flow, not its exact direction.
+                            if _hb["prev_gray"] is not None:
+                                try:
+                                    from cat_cannon.adapters.optical_flow import (
+                                        mean_flow,
+                                    )
+                                    _dx, _dy, _mag = mean_flow(
+                                        cv2, _hb["prev_gray"], turret_gray
+                                    )
+                                    _hb["acc_dx"] += _dx
+                                    _hb["acc_dy"] += _dy
+                                    _hb["acc_mag"] += _mag
+                                    _hb["acc_n"] += 1
+                                except Exception:
+                                    pass
+                            _hb["prev_gray"] = turret_gray
+                            if _hb_now >= _hb["sample_t"] and _hb["watchdog"] is not None:
+                                _n = max(1, _hb["acc_n"])
+                                _mean_mag = _hb["acc_mag"] / _n
+                                _moving = (
+                                    _hb["acc_n"] > 0
+                                    and _mean_mag >= _cfg.flow_min_magnitude_px
+                                )
+                                # Drive the watchdog via an aligned/zero vector so
+                                # its confirmed/failed counter reflects the robust
+                                # magnitude decision.
+                                _exp = (
+                                    _cfg.pan_flow_sign
+                                    * _hb["scan_speed"]
+                                    * _hb["scan_dir"]
+                                )
+                                _hb["watchdog"].record(
+                                    pan_cmd=_hb["scan_speed"] * _hb["scan_dir"],
+                                    tilt_cmd=0.0,
+                                    dx=(_exp if _moving else 0.0),
+                                    dy=0.0,
+                                )
+                                _hb["acc_dx"] = 0.0
+                                _hb["acc_dy"] = 0.0
+                                _hb["acc_mag"] = 0.0
+                                _hb["acc_n"] = 0
+                                _hb["sample_t"] = _hb_now + _cfg.confirm_window_s
+                                if not _moving:
+                                    # Quiet when healthy; log only unconfirmed
+                                    # windows so a real stall is visible without
+                                    # spamming the log every window.
+                                    print(
+                                        f"[heartbeat] scan no-motion pos="
+                                        f"{_hb['scan_pos']:.1f} dir={_hb['scan_dir']} "
+                                        f"mean_mag={_mean_mag:.2f} n={_n} "
+                                        f"fails={_hb['watchdog'].consecutive_failures}",
+                                        flush=True,
+                                    )
+                elif _hb["scanning"]:
+                    # Left idle (target acquired / not idle) -> stop the scan so
+                    # tracking takes over from the current energized position.
+                    _hb["scanning"] = False
+                    if _hb["watchdog"] is not None:
+                        _hb["watchdog"].reset()
+                    if _ctrl is not None:
+                        try:
+                            _ctrl.set_velocity(0.0, 0.0)
                         except Exception:
                             pass
-                        _hb["pending"] = None
-                        _hb["next_move_t"] = _hb_now + _hb["cfg"].move_interval_s
-                elif _hb_now >= _hb["next_move_t"] and state.mode == "idle":
-                    _ctrl = _bg_resources.get("controller")
-                    if _ctrl is not None:
-                        _sign = _hb["dir"]
-                        _pan = _hb["cfg"].move_pan_deg * _sign
-                        _tilt = _hb["cfg"].move_tilt_deg * _sign
-                        try:
-                            _ctrl.apply_tracking_delta(_pan, _tilt)
-                            _hb["pending"] = {
-                                "pre_gray": turret_gray,
-                                "pan": _pan,
-                                "tilt": _tilt,
-                                "deadline": _hb_now + _hb["cfg"].confirm_window_s,
-                            }
-                            _hb["dir"] = -_sign
-                        except Exception:
-                            _hb["next_move_t"] = _hb_now + _hb["cfg"].move_interval_s
 
             frame_counter += 1
 
