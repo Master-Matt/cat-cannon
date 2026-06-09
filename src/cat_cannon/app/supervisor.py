@@ -82,6 +82,10 @@ class SupervisorLoop:
         self._logged_active_zone_id: str | None = None
         self._confirmed_zone_id: str | None = None
         self._confirmed_track_id: str | None = None
+        self._last_fixed_lead_cat: Detection | None = None
+        self._last_fixed_lead_frame_width = 0
+        self._last_fixed_lead_frame_height = 0
+        self._last_fixed_lead_at = 0.0
 
     def _find_turret_cat(
         self,
@@ -216,12 +220,34 @@ class SupervisorLoop:
             tuning.ema_alpha * tilt_delta
             + (1.0 - tuning.ema_alpha) * self._filtered_tilt
         )
-        # Apply gain, clamp pan to prevent overshoot
+        # Apply gain, clamp pan and tilt symmetrically to prevent overshoot
         cmd_pan = max(
             -tuning.pan_clamp_deg,
             min(tuning.pan_clamp_deg, self._filtered_pan * tuning.gain),
         )
-        cmd_tilt = self._filtered_tilt * tuning.gain
+        cmd_tilt = max(
+            -tuning.tilt_clamp_deg,
+            min(tuning.tilt_clamp_deg, self._filtered_tilt * tuning.gain),
+        )
+        # Stop commanding past a servo limit: if the controller reports it is
+        # already at a tilt/pan limit, zero any further into-limit command and
+        # reset the EMA accumulator (anti-windup) so it doesn't oscillate at the
+        # edge. Direction in firmware space is delta_sign * cmd.
+        status = getattr(self.controller, "last_status_payload", {}) or {}
+        tilt_sign = getattr(self.controller, "tilt_delta_sign", 1)
+        pan_sign = getattr(self.controller, "pan_delta_sign", 1)
+        tilt_dir = tilt_sign * cmd_tilt
+        if (tilt_dir > 0 and status.get("tilt_at_max")) or (
+            tilt_dir < 0 and status.get("tilt_at_min")
+        ):
+            cmd_tilt = 0.0
+            self._filtered_tilt = 0.0
+        pan_dir = pan_sign * cmd_pan
+        if (pan_dir > 0 and status.get("pan_at_max")) or (
+            pan_dir < 0 and status.get("pan_at_min")
+        ):
+            cmd_pan = 0.0
+            self._filtered_pan = 0.0
         if abs(cmd_pan) > tuning.deadband_deg or abs(cmd_tilt) > tuning.deadband_deg:
             self.controller.apply_tracking_delta(cmd_pan, cmd_tilt)
 
@@ -277,6 +303,18 @@ class SupervisorLoop:
         )
         human_blocks_fire = human_present
         if fixed_detections_fresh:
+            if (
+                assessment.cat_on_counter
+                and assessment.candidate_cat is not None
+                and not human_present
+            ):
+                self._last_fixed_lead_cat = assessment.candidate_cat
+                self._last_fixed_lead_frame_width = frame_width
+                self._last_fixed_lead_frame_height = frame_height
+                self._last_fixed_lead_at = now_s
+            elif human_present or not assessment.cat_on_counter:
+                self._last_fixed_lead_cat = None
+        if fixed_detections_fresh:
             counter_confirmed = self._confirmation.update(
                 assessment.candidate_cat,
                 assessment.cat_on_counter and not human_blocks_fire,
@@ -309,12 +347,19 @@ class SupervisorLoop:
             SupervisorState.COOLDOWN,
         }
         should_track = target_visible or self._machine.state in tracking_states
-        should_lead_from_fixed = (
-            fixed_detections_fresh
-            and assessment.cat_on_counter
-            and assessment.candidate_cat is not None
-            and not human_present
+        fixed_lead_cat = (
+            assessment.candidate_cat
+            if fixed_detections_fresh and assessment.cat_on_counter
+            else None
         )
+        fixed_lead_frame_width = frame_width
+        fixed_lead_frame_height = frame_height
+        if fixed_lead_cat is None and self._last_fixed_lead_cat is not None:
+            if now_s - self._last_fixed_lead_at <= 2.0:
+                fixed_lead_cat = self._last_fixed_lead_cat
+                fixed_lead_frame_width = self._last_fixed_lead_frame_width
+                fixed_lead_frame_height = self._last_fixed_lead_frame_height
+        should_lead_from_fixed = fixed_lead_cat is not None and not human_present
 
         # Turret camera: track the active target class only when armed.
         turret_target = None
@@ -354,9 +399,9 @@ class SupervisorLoop:
                 self._apply_ema_tracking(correction)
             elif should_lead_from_fixed:
                 correction = self._fixed_camera_horizontal_lead(
-                    cat=assessment.candidate_cat,
-                    frame_width=frame_width,
-                    frame_height=frame_height,
+                    cat=fixed_lead_cat,
+                    frame_width=fixed_lead_frame_width,
+                    frame_height=fixed_lead_frame_height,
                 )
                 self._apply_ema_tracking(correction)
         elif armed and should_track and assessment.candidate_cat is not None:

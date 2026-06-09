@@ -27,8 +27,8 @@ human_lockout:
   frame_threshold: 5
 
 tracking:
-  horizontal_deadband_px: 15
-  vertical_deadband_px: 15
+  horizontal_deadband_px: 25
+  vertical_deadband_px: 25
   horizontal_gain: 0.03
   vertical_gain: 0.03
   aim_offset_x_px: 0
@@ -37,13 +37,19 @@ tracking:
   servo_center_tilt_deg: 0
   servo_min_pan_deg: 0
   servo_max_pan_deg: 180
-  servo_min_tilt_deg: 30
-  servo_max_tilt_deg: 150
+  # Tilt is gravity-loaded, so the servo can lose drive torque near its travel
+  # extremes (it still holds position but won't move under load until nudged).
+  # Keep the commanded range inside the reliably drivable band; widen only if
+  # your hardware (counterbalance / higher-torque servo / stiffer 5-6V supply)
+  # can actually drive the full 30-150 mechanical range. Pan is unaffected.
+  servo_min_tilt_deg: 45
+  servo_max_tilt_deg: 135
 
 tracking_tuning:
   ema_alpha: 0.35
   gain: 0.5
   pan_clamp_deg: 3.0
+  tilt_clamp_deg: 3.0
   deadband_deg: 0.1
   frame_wait_ms: 10
   fire_requires_turret_target: true
@@ -64,3 +70,23 @@ event_recording:
   publish_requires_shot: true
   discord_webhook_url: ''
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
+
+heartbeat:
+  enabled: false
+  liveness_timeout_s: 15        # detection loop must tick within this window
+  move_interval_s: 25           # send a deliberate idle "heartbeat move" this often
+  move_pan_deg: 6               # heartbeat move size (clamped by servo limits on the Pico)
+  move_tilt_deg: 3
+  confirm_window_s: 2.5         # window to observe optical flow after a move
+  flow_min_magnitude_px: 0.6    # minimum mean turret-camera flow to count as motion
+  direction_dot_min: 0.15       # flow must broadly agree with commanded direction
+  max_consecutive_motion_failures: 3
+  pan_flow_sign: 1              # map commanded pan to expected camera flow x sign
+  tilt_flow_sign: 1             # map commanded tilt to expected camera flow y sign
+  discord_webhook_url: ''
+  discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
+  restart_reboot_threshold: 3   # this many app restarts within the window -> reboot
+  restart_window_s: 600
+  reboot_enabled: true
+  reboot_command: sudo systemctl reboot
+  state_path: ~/.cache/cat-cannon/restart-state.json

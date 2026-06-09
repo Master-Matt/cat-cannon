@@ -11,11 +11,11 @@ from cat_cannon.config import (
 )
 
 
-def test_example_config_uses_fifteen_pixel_aim_lock_deadband() -> None:
+def test_example_config_uses_twenty_five_pixel_aim_lock_deadband() -> None:
     config = load_system_config("configs/app.example.yaml")
 
-    assert config.tracking_calibration.horizontal_deadband_px == 15
-    assert config.tracking_calibration.vertical_deadband_px == 15
+    assert config.tracking_calibration.horizontal_deadband_px == 25
+    assert config.tracking_calibration.vertical_deadband_px == 25
     assert config.detection_policy.consecutive_counter_frames == 3
     assert config.detection_policy.confirmation_miss_tolerance_frames == 5
     assert config.tracking_calibration.aim_offset_x_px == 0
@@ -27,8 +27,10 @@ def test_example_config_exposes_servo_motion_limits() -> None:
 
     assert config.servo_limits.pan_min_deg == 0
     assert config.servo_limits.pan_max_deg == 180
-    assert config.servo_limits.tilt_min_deg == 30
-    assert config.servo_limits.tilt_max_deg == 150
+    # Tilt is narrowed to the reliably drivable band (gravity-loaded axis loses
+    # drive torque near the 30/150 mechanical extremes); see app.example.yaml.
+    assert config.servo_limits.tilt_min_deg == 45
+    assert config.servo_limits.tilt_max_deg == 135
 
 
 def test_example_config_uses_small_servo_command_deadband() -> None:

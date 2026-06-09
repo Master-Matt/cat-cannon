@@ -65,6 +65,8 @@ class TrackingTestConfig:
     baudrate: int = 115200
     fire_ms: int = 120
     step_deg: float = 3.0
+    tilt_step_deg: float = 3.0
+    tilt_up_step_deg: float = 8.0
     config_path: str = "configs/app.yaml"
     zones_path: str = "configs/zones.yaml"
     yolo_model: str = "yolo11s.pt"
@@ -95,6 +97,8 @@ class LimitCalibrationSample:
 class TrackingTestState:
     armed: bool
     step_deg: float
+    tilt_step_deg: float | None = None
+    tilt_up_step_deg: float | None = None
     track_humans: bool = False
     limit_target: LimitTarget = "top"
     limit_flow_active: bool = False
@@ -177,6 +181,25 @@ def _require_cv2():
     return cv2
 
 
+def _active_tracking_policy(
+    base_policy: DetectionPolicy,
+    *,
+    track_humans: bool,
+) -> DetectionPolicy:
+    if not track_humans:
+        return base_policy
+    return DetectionPolicy(
+        cat_class=base_policy.person_class,
+        person_class="__disabled__",
+        cat_confidence_threshold=base_policy.person_confidence_threshold,
+        person_confidence_threshold=base_policy.person_confidence_threshold,
+        consecutive_counter_frames=base_policy.consecutive_counter_frames,
+        confirmation_miss_tolerance_frames=(
+            base_policy.confirmation_miss_tolerance_frames
+        ),
+    )
+
+
 def resolve_zones_path(path: str | Path) -> Path:
     candidate = Path(path)
     if candidate.exists():
@@ -238,14 +261,24 @@ def detect_tracking_cameras(
     )
 
 
-def _fit_preview(frame_width: int, frame_height: int, region: Rect) -> Rect:
+def _fit_preview(
+    frame_width: int,
+    frame_height: int,
+    region: Rect,
+    *,
+    horizontal_align: Literal["center", "right"] = "center",
+) -> Rect:
     frame_width = max(1, frame_width)
     frame_height = max(1, frame_height)
     scale = min(region.width / frame_width, region.height / frame_height)
     width = max(1, int(frame_width * scale))
     height = max(1, int(frame_height * scale))
+    if horizontal_align == "right":
+        x = region.x + region.width - width
+    else:
+        x = region.x + (region.width - width) // 2
     return Rect(
-        x=region.x + (region.width - width) // 2,
+        x=x,
         y=region.y + (region.height - height) // 2,
         width=width,
         height=height,
@@ -274,7 +307,12 @@ def build_tracking_layout(
             panel_x=panel_x,
             fixed=PreviewPlacement(
                 region=fixed_region,
-                preview=_fit_preview(fixed_frame_width, fixed_frame_height, fixed_region),
+                preview=_fit_preview(
+                    fixed_frame_width,
+                    fixed_frame_height,
+                    fixed_region,
+                    horizontal_align="right",
+                ),
             ),
             turret=None,
         )
@@ -289,11 +327,21 @@ def build_tracking_layout(
         panel_x=panel_x,
         fixed=PreviewPlacement(
             region=fixed_region,
-            preview=_fit_preview(fixed_frame_width, fixed_frame_height, fixed_region),
+            preview=_fit_preview(
+                fixed_frame_width,
+                fixed_frame_height,
+                fixed_region,
+                horizontal_align="right",
+            ),
         ),
         turret=PreviewPlacement(
             region=turret_region,
-            preview=_fit_preview(turret_frame_width, turret_frame_height, turret_region),
+            preview=_fit_preview(
+                turret_frame_width,
+                turret_frame_height,
+                turret_region,
+                horizontal_align="right",
+            ),
         ),
     )
 
@@ -346,11 +394,29 @@ def handle_tracking_control(
         )
 
     if control == "tilt_up":
-        controller.apply_tracking_delta(0.0, -state.step_deg)
-        return TrackingControlResult(state=state, message=f"tilt up {state.step_deg:.1f} deg")
+        tilt_step = (
+            state.tilt_up_step_deg
+            if state.tilt_up_step_deg is not None
+            else (state.tilt_step_deg if state.tilt_step_deg is not None else state.step_deg)
+        )
+        controller.apply_tracking_delta(0.0, -tilt_step)
+        return TrackingControlResult(state=state, message=f"tilt up {tilt_step:.1f} deg")
     if control == "tilt_down":
-        controller.apply_tracking_delta(0.0, state.step_deg)
-        return TrackingControlResult(state=state, message=f"tilt down {state.step_deg:.1f} deg")
+        tilt_step = state.tilt_step_deg if state.tilt_step_deg is not None else state.step_deg
+        controller.apply_tracking_delta(0.0, tilt_step)
+        return TrackingControlResult(state=state, message=f"tilt down {tilt_step:.1f} deg")
+    if control in {"tilt_step_inc", "tilt_step_dec"}:
+        current = (
+            state.tilt_up_step_deg
+            if state.tilt_up_step_deg is not None
+            else (state.tilt_step_deg if state.tilt_step_deg is not None else state.step_deg)
+        )
+        delta = 2.0 if control == "tilt_step_inc" else -2.0
+        new_tilt_step = max(1.0, min(30.0, current + delta))
+        return TrackingControlResult(
+            state=_copy_tracking_state(state, tilt_up_step_deg=new_tilt_step),
+            message=f"tilt up step {new_tilt_step:.1f} deg",
+        )
     if control == "pan_left":
         controller.apply_tracking_delta(-state.step_deg, 0.0)
         return TrackingControlResult(state=state, message=f"pan left {state.step_deg:.1f} deg")
@@ -438,6 +504,8 @@ def _copy_tracking_state(state: TrackingTestState, **changes: Any) -> TrackingTe
     values = {
         "armed": state.armed,
         "step_deg": state.step_deg,
+        "tilt_step_deg": state.tilt_step_deg,
+        "tilt_up_step_deg": state.tilt_up_step_deg,
         "track_humans": state.track_humans,
         "limit_target": state.limit_target,
         "limit_flow_active": state.limit_flow_active,
@@ -590,6 +658,8 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--fire-ms", type=int, default=120)
     parser.add_argument("--step-deg", type=float, default=3.0)
+    parser.add_argument("--tilt-step-deg", type=float, default=3.0)
+    parser.add_argument("--tilt-up-step-deg", type=float, default=8.0)
     parser.add_argument("--fixed-camera-width", type=int, default=1280)
     parser.add_argument("--fixed-camera-height", type=int, default=720)
     parser.add_argument("--turret-camera-width", type=int, default=1280)
@@ -688,6 +758,8 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
         baudrate=args.baudrate,
         fire_ms=args.fire_ms,
         step_deg=args.step_deg,
+        tilt_step_deg=args.tilt_step_deg,
+        tilt_up_step_deg=args.tilt_up_step_deg,
         config_path=args.config,
         zones_path=args.zones,
         yolo_model=yolo_model,
@@ -798,6 +870,8 @@ def _control_from_key(key: int) -> str | None:
         ord("s"): "tilt_down",
         ord("a"): "pan_left",
         ord("d"): "pan_right",
+        ord("["): "tilt_step_dec",
+        ord("]"): "tilt_step_inc",
         ord(" "): "fire",
         ord("p"): "status",
         ord("c"): "set_center",
@@ -1093,6 +1167,11 @@ def _status_lines(
             f"armed={state.armed} track={tracking_mode}"
         ),
         f"state={step_result.state.value} zone={zone} target={target}",
+        (
+            f"fixed_zone={step_result.counter_confirmed} "
+            f"turret_target={step_result.turret_target_visible} "
+            f"fire_ready={step_result.fire_permitted}"
+        ),
         f"locked={step_result.aim_locked} fire={step_result.fire_commanded}",
         correction,
         detection_summary,
@@ -1281,7 +1360,12 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
         else None
     )
 
-    state = TrackingTestState(armed=config.arm_on_start, step_deg=config.step_deg)
+    state = TrackingTestState(
+        armed=config.arm_on_start,
+        step_deg=config.step_deg,
+        tilt_step_deg=config.tilt_step_deg,
+        tilt_up_step_deg=config.tilt_up_step_deg,
+    )
     buttons = _build_buttons(config)
     trace_log = TraceLog()
     dataset_recorder = (
@@ -1379,15 +1463,10 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                     )
 
             # Always compute active policy (may change on user toggle)
-            active_policy = system_config.detection_policy
-            if state.track_humans:
-                active_policy = DetectionPolicy(
-                    cat_class=active_policy.person_class,
-                    person_class="__disabled__",
-                    cat_confidence_threshold=active_policy.person_confidence_threshold,
-                    person_confidence_threshold=active_policy.person_confidence_threshold,
-                    consecutive_counter_frames=active_policy.consecutive_counter_frames,
-                )
+            active_policy = _active_tracking_policy(
+                system_config.detection_policy,
+                track_humans=state.track_humans,
+            )
 
             # Fixed camera: detect at interval (zone confirmation only)
             fixed_detection_updated = False

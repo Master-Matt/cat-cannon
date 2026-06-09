@@ -204,3 +204,55 @@ Before each release:
 - verify the Pico handshake on a bench
 - verify guided servo limits and saved center in the tracking screen
 - keep live fire disabled until both devices report healthy status
+
+## Self-Healing Heartbeat + Watchdog
+
+The app can supervise itself and recover unattended. It is **off by default** —
+enable it in `configs/app.yaml` under the `heartbeat:` block (see
+`configs/app.example.yaml` for every field and its meaning).
+
+How it works:
+
+- **Liveness** — the detection loop emits a beat each iteration. A separate
+  health-monitor thread flags a `hang` if no beat arrives within
+  `liveness_timeout_s`.
+- **Motion confirmation** — every `move_interval_s`, while idle, the app sends a
+  deliberate "heartbeat move" within the servo limits and verifies it with dense
+  optical flow on the turret camera (`confirm_window_s`, `flow_min_magnitude_px`,
+  `direction_dot_min`). After `max_consecutive_motion_failures` unconfirmed
+  moves it flags `no_motion`.
+- On either fault the app posts a Discord notice (reuses
+  `CAT_CANNON_DISCORD_WEBHOOK_URL`) and exits with sentinel code **70**.
+- The **guardian** (`scripts/run_guardian.sh` → `cat_cannon.app.guardian`) runs
+  the app as a child, relaunches it on sentinel-70/crash, and escalates to
+  `reboot_command` once `restart_reboot_threshold` restarts occur within
+  `restart_window_s` (state persisted at `state_path`).
+
+The heartbeat only arms once a turret camera **and** a live controller are
+present, so dry-runs and camera-less benches never false-trip. When enabled it
+takes over idle turret motion (the random "look-around" still moves the eyes but
+not the servos) to avoid double-moves.
+
+Quick manual test (no hardware reboot):
+
+```bash
+# Drive the guardian with a fake app that exits 70 a few times, then 0.
+python -m cat_cannon.app.guardian --backoff 0 -- bash -c 'exit 70'
+```
+
+## Kiosk / Unattended Boot
+
+`scripts/setup_kiosk.sh` (idempotent, run once on the Jetson as the desktop
+user) makes the device come back on its own and stay on the app:
+
+- GDM **auto-login** (`/etc/gdm3/custom.conf`) so a reboot returns to the desktop
+  with no password.
+- **Autostart** the guardian via `~/.config/autostart/cat-cannon.desktop`.
+- Suppress GNOME **notifications, idle-dim, screen-blank, and lock** via
+  `gsettings`.
+- Disable **apport** crash pop-ups.
+- Install a sudoers drop-in so the guardian can run `sudo systemctl reboot`
+  without a password (required for reboot escalation).
+
+After running it, reboot once to confirm auto-login + guardian autostart, then
+check `cat-cannon-guardian.log` and `cat-cannon.log` in the repo root.

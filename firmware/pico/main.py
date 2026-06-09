@@ -168,11 +168,16 @@ class Controller:
             if pan_moved or tilt_moved:
                 self.last_move_ms = now
 
-        # Auto-relax servos after idle period to stop buzzing
-        if (self.pan.attached or self.tilt.attached) and \
-           time.ticks_diff(now, self.last_move_ms) > cfg.SERVO_IDLE_RELAX_MS:
-            self.pan.detach()
-            self.tilt.detach()
+        # Auto-relax servos after idle period to stop buzzing. The tilt axis is
+        # gravity-loaded, so keep it energized (configurable) to preserve holding
+        # torque and avoid sticky re-engagement; pan may relax freely.
+        relax_tilt = getattr(cfg, "SERVO_IDLE_RELAX_TILT", True)
+        idle_ms = time.ticks_diff(now, self.last_move_ms)
+        if idle_ms > cfg.SERVO_IDLE_RELAX_MS:
+            if self.pan.attached:
+                self.pan.detach()
+            if relax_tilt and self.tilt.attached:
+                self.tilt.detach()
 
     def handle(self, message):
         self.last_contact_ms = time.ticks_ms()

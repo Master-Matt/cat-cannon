@@ -1,9 +1,9 @@
 from cat_cannon.adapters.controller import NullTurretController
 from cat_cannon.app.supervisor import SupervisorLoop
-from cat_cannon.config import ServoLimits, SystemConfig
+from cat_cannon.config import ServoLimits, SystemConfig, TrackingTuning
 from cat_cannon.domain.models import BoundingBox, CounterZone, Detection, Point, SupervisorState
 from cat_cannon.domain.safety import DetectionPolicy
-from cat_cannon.domain.targeting import TrackingCalibration
+from cat_cannon.domain.targeting import TrackingCalibration, TurretCorrection
 
 
 def _supervisor(
@@ -106,6 +106,43 @@ def test_supervisor_does_not_confirm_zone_by_replaying_stale_fixed_detection() -
     assert stale_replay.active_zone_id is None
     assert fresh_second_hit.counter_confirmed is True
     assert fresh_second_hit.fixed_zone_fresh is True
+    assert controller.fired == 0
+
+
+def test_supervisor_uses_stale_fixed_hit_only_as_turret_lead_hint() -> None:
+    supervisor, controller = _supervisor()
+
+    supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        fixed_detections_fresh=True,
+    )
+    controller.pan_commands.clear()
+    controller.tilt_commands.clear()
+
+    stale_lead = supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        fixed_detections_fresh=False,
+    )
+
+    assert stale_lead.counter_confirmed is False
+    assert stale_lead.active_zone_id is None
+    assert stale_lead.fire_commanded is False
+    assert stale_lead.correction is not None
+    assert stale_lead.correction.pan_delta > 0
+    assert controller.pan_commands[-1] > 0
+    assert controller.tilt_commands[-1] == 0.0
     assert controller.fired == 0
 
 
@@ -656,3 +693,141 @@ def test_supervisor_tracks_turret_people_when_enabled_but_hysteresis_controls_lo
     assert result.correction is not None
     assert controller.pan_commands
     assert controller.fired == 0
+
+
+def _tuning_supervisor(tuning: TrackingTuning) -> tuple[SupervisorLoop, NullTurretController]:
+    controller = NullTurretController()
+    config = SystemConfig(
+        cooldown_frames=2,
+        detection_policy=DetectionPolicy(
+            cat_class="cat",
+            person_class="person",
+            cat_confidence_threshold=0.4,
+            person_confidence_threshold=0.5,
+            consecutive_counter_frames=2,
+            confirmation_miss_tolerance_frames=5,
+        ),
+        tracking_calibration=TrackingCalibration(
+            horizontal_deadband_px=20,
+            vertical_deadband_px=20,
+            horizontal_gain=0.05,
+            vertical_gain=0.05,
+            aim_offset_x_px=0,
+            aim_offset_y_px=0,
+        ),
+        servo_limits=ServoLimits(),
+        tracking_tuning=tuning,
+    )
+    return SupervisorLoop(config=config, zones=[], controller=controller), controller
+
+
+def test_apply_ema_tracking_clamps_tilt_symmetrically_with_pan() -> None:
+    tuning = TrackingTuning(
+        ema_alpha=1.0, gain=0.5, pan_clamp_deg=3.0, tilt_clamp_deg=3.0, deadband_deg=0.1
+    )
+    supervisor, controller = _tuning_supervisor(tuning)
+
+    # Large correction in both axes; raw is clamped to +/-15, *gain=0.5 -> 7.5 desired,
+    # which must be clamped down to the configured 3.0 on BOTH axes.
+    for _ in range(5):
+        supervisor._apply_ema_tracking(
+            TurretCorrection(pan_delta=50.0, tilt_delta=50.0, aim_locked=False)
+        )
+
+    assert controller.pan_commands, "expected pan tracking commands"
+    assert controller.tilt_commands, "expected tilt tracking commands"
+    assert max(abs(v) for v in controller.pan_commands) <= 3.0 + 1e-9
+    assert max(abs(v) for v in controller.tilt_commands) <= 3.0 + 1e-9
+    # Tilt must not exceed pan once both clamps are equal (the bug was unclamped tilt).
+    assert max(abs(v) for v in controller.tilt_commands) <= max(
+        abs(v) for v in controller.pan_commands
+    ) + 1e-9
+
+
+def test_apply_ema_tracking_respects_independent_tilt_clamp() -> None:
+    tuning = TrackingTuning(
+        ema_alpha=1.0, gain=0.5, pan_clamp_deg=3.0, tilt_clamp_deg=1.0, deadband_deg=0.1
+    )
+    supervisor, controller = _tuning_supervisor(tuning)
+
+    for _ in range(5):
+        supervisor._apply_ema_tracking(
+            TurretCorrection(pan_delta=50.0, tilt_delta=50.0, aim_locked=False)
+        )
+
+    assert max(abs(v) for v in controller.tilt_commands) <= 1.0 + 1e-9
+
+
+class _AtLimitController(NullTurretController):
+    """Controller stub that reports it is pinned at the tilt max limit."""
+
+    tilt_delta_sign: int = 1
+    pan_delta_sign: int = -1
+
+    @property
+    def last_status_payload(self) -> dict:
+        return {"tilt_at_max": True, "tilt_at_min": False,
+                "pan_at_max": False, "pan_at_min": False}
+
+
+def test_apply_ema_tracking_stops_pushing_into_tilt_limit() -> None:
+    tuning = TrackingTuning(
+        ema_alpha=1.0, gain=0.5, pan_clamp_deg=3.0, tilt_clamp_deg=3.0, deadband_deg=0.1
+    )
+    controller = _AtLimitController()
+    config = SystemConfig(
+        cooldown_frames=2,
+        detection_policy=DetectionPolicy(
+            cat_class="cat", person_class="person",
+            cat_confidence_threshold=0.4, person_confidence_threshold=0.5,
+            consecutive_counter_frames=2, confirmation_miss_tolerance_frames=5,
+        ),
+        tracking_calibration=TrackingCalibration(
+            horizontal_deadband_px=20, vertical_deadband_px=20,
+            horizontal_gain=0.05, vertical_gain=0.05,
+            aim_offset_x_px=0, aim_offset_y_px=0,
+        ),
+        servo_limits=ServoLimits(),
+        tracking_tuning=tuning,
+    )
+    supervisor = SupervisorLoop(config=config, zones=[], controller=controller)
+
+    # Correction pushes tilt toward the max limit (positive). It must be suppressed.
+    for _ in range(5):
+        supervisor._apply_ema_tracking(
+            TurretCorrection(pan_delta=0.0, tilt_delta=50.0, aim_locked=False)
+        )
+
+    assert controller.tilt_commands == [], "must not command past the tilt limit"
+    assert supervisor._filtered_tilt == 0.0, "EMA accumulator must reset (anti-windup)"
+
+
+def test_apply_ema_tracking_allows_moving_away_from_tilt_limit() -> None:
+    tuning = TrackingTuning(
+        ema_alpha=1.0, gain=0.5, pan_clamp_deg=3.0, tilt_clamp_deg=3.0, deadband_deg=0.1
+    )
+    controller = _AtLimitController()  # at MAX
+    config = SystemConfig(
+        cooldown_frames=2,
+        detection_policy=DetectionPolicy(
+            cat_class="cat", person_class="person",
+            cat_confidence_threshold=0.4, person_confidence_threshold=0.5,
+            consecutive_counter_frames=2, confirmation_miss_tolerance_frames=5,
+        ),
+        tracking_calibration=TrackingCalibration(
+            horizontal_deadband_px=20, vertical_deadband_px=20,
+            horizontal_gain=0.05, vertical_gain=0.05,
+            aim_offset_x_px=0, aim_offset_y_px=0,
+        ),
+        servo_limits=ServoLimits(),
+        tracking_tuning=tuning,
+    )
+    supervisor = SupervisorLoop(config=config, zones=[], controller=controller)
+
+    # Negative tilt correction moves AWAY from the max limit — must be allowed.
+    supervisor._apply_ema_tracking(
+        TurretCorrection(pan_delta=0.0, tilt_delta=-50.0, aim_locked=False)
+    )
+
+    assert controller.tilt_commands, "moving away from the limit must be allowed"
+    assert controller.tilt_commands[-1] < 0

@@ -27,4 +27,9 @@ MAX_FIRE_DURATION_MS = 1000
 
 # Servo idle relax: stop PWM after this many ms without movement to prevent buzzing
 SERVO_IDLE_RELAX_MS = 2000
+# Idle-relax behaviour. The tilt axis carries a gravity load, so holding it
+# energized continuously draws constant torque/current and can overheat (and
+# burn out) the servo over time. Relax tilt on idle like pan to protect the
+# servo; the brief settle on the next move is an acceptable trade-off.
+SERVO_IDLE_RELAX_TILT = True
 SERVO_EPS_DEG = 0.01

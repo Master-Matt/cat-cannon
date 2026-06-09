@@ -275,6 +275,21 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     _bg_resources: dict = {}
     _bg_done = threading.Event()
 
+    # Shared self-healing heartbeat state (populated lazily by the detection
+    # loop once a turret camera + live controller exist; watched by a separate
+    # health-monitor thread so a hung detection loop can still be detected).
+    _hb: dict = {
+        "cfg": None,
+        "live": None,
+        "watchdog": None,
+        "active": False,
+        "pending": None,
+        "next_move_t": 0.0,
+        "dir": 1,
+    }
+    _fault_event = threading.Event()
+    _fault_reason: dict = {"reason": None}
+
     def _load_resources():
         from cat_cannon.adapters.camera import open_camera
         from cat_cannon.adapters.rp2040_serial import RP2040SerialController
@@ -288,6 +303,12 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         resolved_config_path = _resolve_config_path(config.config_path)
         system_config = load_system_config(resolved_config_path)
         _bg_resources["system_config"] = system_config
+        try:
+            from cat_cannon.config import load_heartbeat_config
+            _bg_resources["heartbeat_config"] = load_heartbeat_config(resolved_config_path)
+        except Exception:
+            from cat_cannon.config import HeartbeatConfig
+            _bg_resources["heartbeat_config"] = HeartbeatConfig()
 
         # Load zones
         try:
@@ -423,6 +444,32 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 time.sleep(0.05)
                 continue
 
+            # --- Heartbeat: lazy init + liveness beat ---
+            _hb_cfg = _bg_resources.get("heartbeat_config")
+            if (
+                _hb["cfg"] is None
+                and _hb_cfg is not None
+                and _hb_cfg.enabled
+                and _turret_cam is not None
+                and _bg_resources.get("controller") is not None
+            ):
+                from cat_cannon.app.heartbeat import Liveness, MotionConfig, MotionWatchdog
+                _hb["cfg"] = _hb_cfg
+                _hb["live"] = Liveness(_hb_cfg.liveness_timeout_s)
+                _hb["watchdog"] = MotionWatchdog(
+                    MotionConfig(
+                        flow_min_magnitude_px=_hb_cfg.flow_min_magnitude_px,
+                        direction_dot_min=_hb_cfg.direction_dot_min,
+                        max_consecutive_failures=_hb_cfg.max_consecutive_motion_failures,
+                        pan_flow_sign=_hb_cfg.pan_flow_sign,
+                        tilt_flow_sign=_hb_cfg.tilt_flow_sign,
+                    )
+                )
+                _hb["next_move_t"] = time.monotonic() + _hb_cfg.move_interval_s
+                _hb["active"] = True
+            if _hb["live"] is not None:
+                _hb["live"].beat()
+
             # Fixed camera: detect at interval for zone confirmation
             fixed_detection_updated = False
             if _fixed_cam is not None and frame_counter % fixed_detect_interval == 0:
@@ -459,6 +506,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             turret_width = None
             turret_height = None
             turret_perception = None
+            turret_gray = None
             if _turret_cam is not None:
                 ok_turret, turret_frame = _turret_cam.read()
                 if ok_turret:
@@ -466,6 +514,12 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     turret_detections = turret_perception.detections
                     turret_width = turret_perception.width
                     turret_height = turret_perception.height
+                    if _hb["active"]:
+                        try:
+                            from cat_cannon.adapters.optical_flow import to_gray
+                            turret_gray = to_gray(cv2, turret_frame)
+                        except Exception:
+                            turret_gray = None
                     if _dataset_recorder is not None and _sys_config is not None:
                         try:
                             _dataset_recorder.maybe_record(
@@ -535,14 +589,88 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 _latest_step_result = step_result
                 _latest_gaze = gaze
 
+            # --- Heartbeat deliberate move + optical-flow confirmation ---
+            if _hb["active"] and turret_gray is not None:
+                _hb_now = time.monotonic()
+                _pending = _hb["pending"]
+                if _pending is not None:
+                    if _hb_now >= _pending["deadline"]:
+                        try:
+                            from cat_cannon.adapters.optical_flow import mean_flow
+                            _dx, _dy, _ = mean_flow(cv2, _pending["pre_gray"], turret_gray)
+                            _hb["watchdog"].record(
+                                pan_cmd=_pending["pan"],
+                                tilt_cmd=_pending["tilt"],
+                                dx=_dx,
+                                dy=_dy,
+                            )
+                        except Exception:
+                            pass
+                        _hb["pending"] = None
+                        _hb["next_move_t"] = _hb_now + _hb["cfg"].move_interval_s
+                elif _hb_now >= _hb["next_move_t"] and state.mode == "idle":
+                    _ctrl = _bg_resources.get("controller")
+                    if _ctrl is not None:
+                        _sign = _hb["dir"]
+                        _pan = _hb["cfg"].move_pan_deg * _sign
+                        _tilt = _hb["cfg"].move_tilt_deg * _sign
+                        try:
+                            _ctrl.apply_tracking_delta(_pan, _tilt)
+                            _hb["pending"] = {
+                                "pre_gray": turret_gray,
+                                "pan": _pan,
+                                "tilt": _tilt,
+                                "deadline": _hb_now + _hb["cfg"].confirm_window_s,
+                            }
+                            _hb["dir"] = -_sign
+                        except Exception:
+                            _hb["next_move_t"] = _hb_now + _hb["cfg"].move_interval_s
+
             frame_counter += 1
 
     detect_thread = threading.Thread(target=_detection_loop, daemon=True)
     detect_thread.start()
 
+    def _health_monitor():
+        """Watch liveness + motion watchdog; on fault notify Discord once and
+        signal the main loop to exit with the heartbeat sentinel code."""
+        from cat_cannon.app.notify import post_discord_message
+
+        while _detect_running and not _fault_event.is_set():
+            time.sleep(0.5)
+            if not _hb["active"]:
+                continue
+            _live = _hb["live"]
+            _wd = _hb["watchdog"]
+            reason = None
+            if _live is not None and _live.is_stale():
+                reason = "hang"
+            elif _wd is not None and _wd.tripped:
+                reason = "no_motion"
+            if reason is not None:
+                _fault_reason["reason"] = reason
+                _cfg = _hb["cfg"]
+                try:
+                    post_discord_message(
+                        _cfg.resolved_discord_webhook_url(),
+                        f"\u26a0\ufe0f Cat Cannon missed heartbeat ({reason}) \u2014 restarting.",
+                    )
+                except Exception:
+                    pass
+                _fault_event.set()
+                break
+
+    health_thread = threading.Thread(target=_health_monitor, daemon=True)
+    health_thread.start()
+
     try:
         while next_screen is None:
             now = time.time()
+
+            # Self-healing heartbeat tripped -> leave the loop so cleanup runs
+            # and the process exits with the sentinel code for the guardian.
+            if _fault_event.is_set():
+                break
 
             # --- Pick up background resources once ready ---
             if _bg_done.is_set() and system_config is None:
@@ -591,8 +719,9 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     state.target_gaze_y = random.uniform(-0.4, 0.4)
                     state.next_look_time = now + random.uniform(30.0, 60.0)
 
-                    # Move turret to follow the random look (single large move, no buzz)
-                    if controller is not None:
+                    # Move turret to follow the random look (single large move, no buzz).
+                    # Skipped when the heartbeat owns idle motion (avoids double-moves).
+                    if controller is not None and not _hb["active"]:
                         pan_delta = state.target_gaze_x * 15.0
                         tilt_delta = state.target_gaze_y * 10.0
                         try:
@@ -655,6 +784,10 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     finally:
         _detect_running = False
         detect_thread.join(timeout=2.0)
+        try:
+            health_thread.join(timeout=1.0)
+        except Exception:
+            pass
         _session = _bg_resources.get("session")
         if _session is not None:
             try:
@@ -680,5 +813,17 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         if turret_camera is not None:
             turret_camera.release()
         cv2.destroyAllWindows()
+
+    if _fault_event.is_set():
+        import sys
+
+        from cat_cannon.app.heartbeat import SENTINEL_EXIT_CODE
+
+        reason = _fault_reason.get("reason") or "unknown"
+        print(
+            f"[heartbeat] fault ({reason}); exiting {SENTINEL_EXIT_CODE} for guardian",
+            flush=True,
+        )
+        sys.exit(SENTINEL_EXIT_CODE)
 
     return next_screen

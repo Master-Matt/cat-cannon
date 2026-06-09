@@ -5,24 +5,28 @@ import yaml
 from cat_cannon.adapters.controller import NullTurretController
 from cat_cannon.adapters.interfaces import PerceptionFrame
 from cat_cannon.adapters.rp2040_protocol import ControllerResponse
+from cat_cannon.app.supervisor import SupervisorStepResult
 from cat_cannon.app.tracking_test import (
     TraceLog,
     TrackingTestConfig,
     TrackingTestState,
+    _active_tracking_policy,
     _annotate_camera,
     _build_buttons,
     _control_from_key,
     _draw_button,
     _draw_camera_status_in_left_margin,
     _draw_panel_header,
+    _left_label_rect,
     _next_limit_target,
+    _status_lines,
     build_tracking_layout,
     detect_tracking_cameras,
     handle_tracking_control,
     parse_args,
     resolve_zones_path,
 )
-from cat_cannon.domain.models import BoundingBox, Detection
+from cat_cannon.domain.models import BoundingBox, Detection, SupervisorState
 from cat_cannon.domain.safety import DetectionPolicy
 
 
@@ -230,6 +234,24 @@ def test_tracking_test_state_defaults_human_tracking_off() -> None:
     state = TrackingTestState(armed=True, step_deg=5.0)
 
     assert state.track_humans is False
+
+
+def test_tracking_human_mode_policy_preserves_fixed_miss_tolerance() -> None:
+    base_policy = DetectionPolicy(
+        cat_class="cat",
+        person_class="person",
+        cat_confidence_threshold=0.4,
+        person_confidence_threshold=0.6,
+        consecutive_counter_frames=3,
+        confirmation_miss_tolerance_frames=5,
+    )
+
+    human_policy = _active_tracking_policy(base_policy, track_humans=True)
+
+    assert human_policy.cat_class == "person"
+    assert human_policy.person_class == "__disabled__"
+    assert human_policy.cat_confidence_threshold == 0.6
+    assert human_policy.confirmation_miss_tolerance_frames == 5
 
 
 def test_tracking_control_preserves_human_tracking_preference_when_arming() -> None:
@@ -588,6 +610,51 @@ def test_tracking_camera_status_uses_left_image_margin() -> None:
     assert all(layout.fixed.region.x <= x < layout.fixed.preview.x for x, _y in origins)
 
 
+def test_tracking_layout_right_aligns_previews_for_wide_left_status_margin() -> None:
+    layout = build_tracking_layout(
+        fixed_frame_width=1280,
+        fixed_frame_height=720,
+        turret_frame_width=1280,
+        turret_frame_height=720,
+        window_width=1024,
+        window_height=600,
+        panel_width=280,
+    )
+
+    assert layout.fixed.preview.x + layout.fixed.preview.width == layout.panel_x
+    assert _left_label_rect(layout.fixed).width >= 180
+    assert layout.turret is not None
+    assert layout.turret.preview.x + layout.turret.preview.width == layout.panel_x
+    assert _left_label_rect(layout.turret).width >= 180
+
+
+def test_tracking_status_lines_show_fire_gate_inputs() -> None:
+    result = SupervisorStepResult(
+        state=SupervisorState.IDLE,
+        fire_commanded=False,
+        human_present=False,
+        counter_confirmed=False,
+        target_visible=False,
+        aim_locked=True,
+        active_zone_id=None,
+        candidate_track_id=None,
+        correction=None,
+        turret_target_visible=True,
+        turret_fire_aligned=True,
+        fire_permitted=False,
+        fixed_zone_fresh=False,
+    )
+
+    lines = _status_lines(
+        state=TrackingTestState(armed=True, step_deg=3.0, track_humans=True),
+        live_controller=True,
+        detection_summary="fixed cats=0 people=1",
+        step_result=result,
+    )
+
+    assert "fixed_zone=False turret_target=True fire_ready=False" in lines
+
+
 def test_tracking_control_relaxes_servos_when_supported() -> None:
     controller = FakeLimitController(pan_deg=90, tilt_deg=90)
 
@@ -681,3 +748,66 @@ def test_tracking_test_config_defaults_to_named_device_symlinks() -> None:
     assert config.turret_camera_width == 1280
     assert config.turret_camera_height == 720
     assert config.zones_path == "configs/zones.yaml"
+
+
+def test_tilt_up_uses_up_step_and_down_uses_tilt_step() -> None:
+    controller = NullTurretController()
+    state = TrackingTestState(
+        armed=False, step_deg=3.0, tilt_step_deg=3.0, tilt_up_step_deg=8.0
+    )
+
+    up = handle_tracking_control(
+        "tilt_up", state=state, session=None, controller=controller
+    )
+    down = handle_tracking_control(
+        "tilt_down", state=state, session=None, controller=controller
+    )
+
+    # Up fights gravity (larger step); down is gravity-assisted (smaller step).
+    assert controller.tilt_commands == [-8.0, 3.0]
+    assert "8.0" in up.message
+    assert "3.0" in down.message
+
+
+def test_tilt_up_falls_back_to_tilt_step_when_up_step_unset() -> None:
+    controller = NullTurretController()
+    state = TrackingTestState(armed=False, step_deg=3.0, tilt_step_deg=8.0)
+
+    handle_tracking_control("tilt_up", state=state, session=None, controller=controller)
+
+    assert controller.tilt_commands == [-8.0]
+
+
+def test_tilt_step_falls_back_to_step_deg_when_unset() -> None:
+    controller = NullTurretController()
+    state = TrackingTestState(armed=False, step_deg=5.0)
+
+    handle_tracking_control("tilt_down", state=state, session=None, controller=controller)
+
+    assert controller.tilt_commands == [5.0]
+
+
+def test_tilt_step_inc_dec_adjusts_up_step_and_clamps() -> None:
+    controller = NullTurretController()
+    state = TrackingTestState(
+        armed=False, step_deg=3.0, tilt_step_deg=3.0, tilt_up_step_deg=8.0
+    )
+
+    up = handle_tracking_control(
+        "tilt_step_inc", state=state, session=None, controller=controller
+    )
+    assert up.state.tilt_up_step_deg == 10.0
+    assert up.state.tilt_step_deg == 3.0  # down step unchanged
+
+    down = handle_tracking_control(
+        "tilt_step_dec", state=up.state, session=None, controller=controller
+    )
+    assert down.state.tilt_up_step_deg == 8.0
+
+    # No servo motion from step adjustments.
+    assert controller.tilt_commands == []
+
+
+def test_tilt_step_keys_mapped() -> None:
+    assert _control_from_key(ord("[")) == "tilt_step_dec"
+    assert _control_from_key(ord("]")) == "tilt_step_inc"

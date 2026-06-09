@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Cat Cannon
-Comment=Cat Cannon turret control system
-Exec=/home/mdev/cat_cannon/scripts/run_app.sh
+Comment=Cat Cannon turret control system (self-healing guardian)
+Exec=/home/mdev/cat_cannon/scripts/run_guardian.sh
 Path=/home/mdev/cat_cannon
 Terminal=false
 Type=Application

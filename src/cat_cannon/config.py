@@ -54,6 +54,7 @@ class TrackingTuning:
     ema_alpha: float = 0.35
     gain: float = 0.5
     pan_clamp_deg: float = 3.0
+    tilt_clamp_deg: float = 3.0
     deadband_deg: float = 0.1
     frame_wait_ms: int = 10
     fire_requires_turret_target: bool = True
@@ -82,6 +83,48 @@ class EventRecordingConfig:
     publish_requires_shot: bool = True
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
+
+    def resolved_discord_webhook_url(self) -> str:
+        if self.discord_webhook_url.strip():
+            return self.discord_webhook_url.strip()
+        return os.environ.get(self.discord_webhook_env, "").strip()
+
+
+@dataclass(frozen=True)
+class HeartbeatConfig:
+    """Self-healing watchdog configuration.
+
+    The heartbeat performs two checks while the turret is idle:
+
+    * **Liveness** — the detection loop must keep ticking; a stale loop means the
+      app has hung.
+    * **Motion confirmation** — periodic deliberate "heartbeat moves" are sent to
+      the turret and verified with optical flow on the turret camera.
+
+    A failure of either check triggers an in-app fault (Discord notice + process
+    exit with a sentinel code) which the external guardian turns into a restart,
+    escalating to a system reboot when restarts keep recurring.
+    """
+
+    enabled: bool = False
+    liveness_timeout_s: float = 15.0
+    move_interval_s: float = 25.0
+    move_pan_deg: float = 6.0
+    move_tilt_deg: float = 3.0
+    confirm_window_s: float = 2.5
+    flow_min_magnitude_px: float = 0.6
+    direction_dot_min: float = 0.15
+    max_consecutive_motion_failures: int = 3
+    pan_flow_sign: int = 1
+    tilt_flow_sign: int = 1
+    discord_webhook_url: str = ""
+    discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
+    # Guardian / restart-escalation policy.
+    restart_reboot_threshold: int = 3
+    restart_window_s: float = 600.0
+    reboot_enabled: bool = True
+    reboot_command: str = "sudo systemctl reboot"
+    state_path: str = "~/.cache/cat-cannon/restart-state.json"
 
     def resolved_discord_webhook_url(self) -> str:
         if self.discord_webhook_url.strip():
@@ -193,6 +236,9 @@ def load_system_config(path: str | Path) -> SystemConfig:
             ema_alpha=float(tuning.get("ema_alpha", 0.35)),
             gain=float(tuning.get("gain", 0.5)),
             pan_clamp_deg=float(tuning.get("pan_clamp_deg", 3.0)),
+            tilt_clamp_deg=float(
+                tuning.get("tilt_clamp_deg", tuning.get("pan_clamp_deg", 3.0))
+            ),
             deadband_deg=float(tuning.get("deadband_deg", 0.1)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
             fire_requires_turret_target=bool(
@@ -224,6 +270,72 @@ def load_event_recording_config(path: str | Path) -> EventRecordingConfig:
     except FileNotFoundError:
         return EventRecordingConfig()
     return _event_recording_config_from_raw(raw)
+
+
+def _heartbeat_config_from_raw(raw: dict) -> HeartbeatConfig:
+    heartbeat = raw.get("heartbeat", {})
+    if heartbeat is None:
+        heartbeat = {}
+    if not isinstance(heartbeat, dict):
+        raise ValueError("Expected mapping config at heartbeat")
+    defaults = HeartbeatConfig()
+    return HeartbeatConfig(
+        enabled=bool(heartbeat.get("enabled", defaults.enabled)),
+        liveness_timeout_s=max(
+            1.0, float(heartbeat.get("liveness_timeout_s", defaults.liveness_timeout_s))
+        ),
+        move_interval_s=max(
+            1.0, float(heartbeat.get("move_interval_s", defaults.move_interval_s))
+        ),
+        move_pan_deg=float(heartbeat.get("move_pan_deg", defaults.move_pan_deg)),
+        move_tilt_deg=float(heartbeat.get("move_tilt_deg", defaults.move_tilt_deg)),
+        confirm_window_s=max(
+            0.1, float(heartbeat.get("confirm_window_s", defaults.confirm_window_s))
+        ),
+        flow_min_magnitude_px=max(
+            0.0, float(heartbeat.get("flow_min_magnitude_px", defaults.flow_min_magnitude_px))
+        ),
+        direction_dot_min=float(
+            heartbeat.get("direction_dot_min", defaults.direction_dot_min)
+        ),
+        max_consecutive_motion_failures=max(
+            1,
+            int(
+                heartbeat.get(
+                    "max_consecutive_motion_failures",
+                    defaults.max_consecutive_motion_failures,
+                )
+            ),
+        ),
+        pan_flow_sign=_sign(heartbeat.get("pan_flow_sign", defaults.pan_flow_sign)),
+        tilt_flow_sign=_sign(heartbeat.get("tilt_flow_sign", defaults.tilt_flow_sign)),
+        discord_webhook_url=str(heartbeat.get("discord_webhook_url", "") or ""),
+        discord_webhook_env=str(
+            heartbeat.get("discord_webhook_env", defaults.discord_webhook_env)
+            or defaults.discord_webhook_env
+        ),
+        restart_reboot_threshold=max(
+            1,
+            int(heartbeat.get("restart_reboot_threshold", defaults.restart_reboot_threshold)),
+        ),
+        restart_window_s=max(
+            1.0, float(heartbeat.get("restart_window_s", defaults.restart_window_s))
+        ),
+        reboot_enabled=bool(heartbeat.get("reboot_enabled", defaults.reboot_enabled)),
+        reboot_command=str(
+            heartbeat.get("reboot_command", defaults.reboot_command)
+            or defaults.reboot_command
+        ),
+        state_path=str(heartbeat.get("state_path", defaults.state_path) or defaults.state_path),
+    )
+
+
+def load_heartbeat_config(path: str | Path) -> HeartbeatConfig:
+    try:
+        raw = _load_yaml(path)
+    except FileNotFoundError:
+        return HeartbeatConfig()
+    return _heartbeat_config_from_raw(raw)
 
 
 def load_counter_zones(path: str | Path) -> list[CounterZone]:
@@ -548,6 +660,10 @@ def _optional_int(value) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _sign(value) -> int:
+    return 1 if float(value) >= 0 else -1
 
 
 def _frame_size(raw_frame: object) -> tuple[float | None, float | None]:
