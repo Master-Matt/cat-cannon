@@ -251,6 +251,15 @@ user) makes the device come back on its own and stay on the app:
 - Suppress GNOME **notifications, idle-dim, screen-blank, and lock** via
   `gsettings`.
 - Disable **apport** crash pop-ups.
+- **Force the display on** for the flaky-EDID panel. The Jetson's nvidia/Tegra
+  driver intermittently drops the panel a few seconds after boot (the kernel
+  reports the output connected but with 0 bytes of EDID), leaving X headless and
+  the screen black. `configure_display()` captures the panel's EDID live (falling
+  back to the committed `configs/cat-cannon-edid.bin`), installs it to
+  `/etc/X11/cat-cannon-edid.bin`, and patches the nvidia `Device` section in
+  `/etc/X11/xorg.conf` with `ConnectedMonitor`, `CustomEDID`, and
+  `ModeValidation "...: NoMaxPClkCheck"` so hot-plug detection and the flaky DDC
+  are bypassed. Backs up `xorg.conf` first; safe to re-run.
 - Install a sudoers drop-in so the guardian can run `sudo systemctl reboot`
   without a password (required for reboot escalation).
 
