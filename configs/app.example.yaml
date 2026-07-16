@@ -76,19 +76,6 @@ event_recording:
 heartbeat:
   enabled: false
   liveness_timeout_s: 15        # detection loop must tick within this window
-  move_interval_s: 25           # send a deliberate idle "heartbeat move" this often
-  move_pan_deg: 6               # heartbeat move size (clamped by servo limits on the Pico)
-  move_tilt_deg: 3
-  confirm_window_s: 2.5         # window to observe optical flow after a move
-  flow_min_magnitude_px: 0.6    # minimum mean turret-camera flow to count as motion
-  direction_dot_min: 0.15       # flow must broadly agree with commanded direction
-  max_consecutive_motion_failures: 3
-  pan_flow_sign: 1              # map commanded pan to expected camera flow x sign
-  tilt_flow_sign: 1            # map commanded tilt to expected camera flow y sign
-  scan_enabled: true           # slow pan back-and-forth scan while idle (vs. one-shot moves)
-  scan_pan_speed_deg_s: 10     # how fast the idle scan sweeps
-  scan_amplitude_deg: 25       # half-width of the scan band around pan center
-  motion_grace_s: 30           # suppress motion-watchdog restarts this long after startup (warmup)
   discord_webhook_url: ''
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
   restart_reboot_threshold: 3   # this many app restarts within the window -> reboot

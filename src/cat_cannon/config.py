@@ -94,42 +94,16 @@ class EventRecordingConfig:
 class HeartbeatConfig:
     """Self-healing watchdog configuration.
 
-    The heartbeat performs two checks while the turret is idle:
+    The detection loop must keep ticking; a stale loop means the app has hung.
+    Idle turret motion is handled separately by returning to the saved center.
 
-    * **Liveness** — the detection loop must keep ticking; a stale loop means the
-      app has hung.
-    * **Motion confirmation** — periodic deliberate "heartbeat moves" are sent to
-      the turret and verified with optical flow on the turret camera.
-
-    A failure of either check triggers an in-app fault (Discord notice + process
-    exit with a sentinel code) which the external guardian turns into a restart,
-    escalating to a system reboot when restarts keep recurring.
+    A liveness failure triggers an in-app fault (Discord notice + process exit
+    with a sentinel code) which the external guardian turns into a restart,
+    escalating to a system reboot when failures keep recurring.
     """
 
     enabled: bool = False
     liveness_timeout_s: float = 15.0
-    move_interval_s: float = 25.0
-    move_pan_deg: float = 6.0
-    move_tilt_deg: float = 3.0
-    confirm_window_s: float = 2.5
-    flow_min_magnitude_px: float = 0.6
-    direction_dot_min: float = 0.15
-    max_consecutive_motion_failures: int = 3
-    pan_flow_sign: int = 1
-    tilt_flow_sign: int = 1
-    # Idle "scanning" motion: instead of jerky one-shot moves that relax almost
-    # immediately, the turret pans slowly back and forth across a band centered
-    # in its pan range. Continuous velocity keeps pan energized + moving, so it
-    # never drifts under cord pressure and never snaps back, and the smooth sweep
-    # produces clear optical flow for motion confirmation.
-    scan_enabled: bool = True
-    scan_pan_speed_deg_s: float = 10.0
-    scan_amplitude_deg: float = 25.0
-    # Startup grace: after the heartbeat first activates (resources loaded, idle
-    # scan begins) the camera, servos and model are still warming up, so suppress
-    # motion-watchdog restarts for this long to avoid a boot-time restart loop
-    # that prevents the GUI from ever rendering.
-    motion_grace_s: float = 30.0
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
     # Guardian / restart-escalation policy.
@@ -296,41 +270,6 @@ def _heartbeat_config_from_raw(raw: dict) -> HeartbeatConfig:
         enabled=bool(heartbeat.get("enabled", defaults.enabled)),
         liveness_timeout_s=max(
             1.0, float(heartbeat.get("liveness_timeout_s", defaults.liveness_timeout_s))
-        ),
-        move_interval_s=max(
-            1.0, float(heartbeat.get("move_interval_s", defaults.move_interval_s))
-        ),
-        move_pan_deg=float(heartbeat.get("move_pan_deg", defaults.move_pan_deg)),
-        move_tilt_deg=float(heartbeat.get("move_tilt_deg", defaults.move_tilt_deg)),
-        confirm_window_s=max(
-            0.1, float(heartbeat.get("confirm_window_s", defaults.confirm_window_s))
-        ),
-        flow_min_magnitude_px=max(
-            0.0, float(heartbeat.get("flow_min_magnitude_px", defaults.flow_min_magnitude_px))
-        ),
-        direction_dot_min=float(
-            heartbeat.get("direction_dot_min", defaults.direction_dot_min)
-        ),
-        max_consecutive_motion_failures=max(
-            1,
-            int(
-                heartbeat.get(
-                    "max_consecutive_motion_failures",
-                    defaults.max_consecutive_motion_failures,
-                )
-            ),
-        ),
-        pan_flow_sign=_sign(heartbeat.get("pan_flow_sign", defaults.pan_flow_sign)),
-        tilt_flow_sign=_sign(heartbeat.get("tilt_flow_sign", defaults.tilt_flow_sign)),
-        scan_enabled=bool(heartbeat.get("scan_enabled", defaults.scan_enabled)),
-        scan_pan_speed_deg_s=max(
-            0.5, float(heartbeat.get("scan_pan_speed_deg_s", defaults.scan_pan_speed_deg_s))
-        ),
-        scan_amplitude_deg=max(
-            1.0, float(heartbeat.get("scan_amplitude_deg", defaults.scan_amplitude_deg))
-        ),
-        motion_grace_s=max(
-            0.0, float(heartbeat.get("motion_grace_s", defaults.motion_grace_s))
         ),
         discord_webhook_url=str(heartbeat.get("discord_webhook_url", "") or ""),
         discord_webhook_env=str(
@@ -683,10 +622,6 @@ def _optional_int(value) -> int | None:
     if value is None:
         return None
     return int(value)
-
-
-def _sign(value) -> int:
-    return 1 if float(value) >= 0 else -1
 
 
 def _frame_size(raw_frame: object) -> tuple[float | None, float | None]:

@@ -216,12 +216,10 @@ How it works:
 - **Liveness** — the detection loop emits a beat each iteration. A separate
   health-monitor thread flags a `hang` if no beat arrives within
   `liveness_timeout_s`.
-- **Motion confirmation** — every `move_interval_s`, while idle, the app sends a
-  deliberate "heartbeat move" within the servo limits and verifies it with dense
-  optical flow on the turret camera (`confirm_window_s`, `flow_min_magnitude_px`,
-  `direction_dot_min`). After `max_consecutive_motion_failures` unconfirmed
-  moves it flags `no_motion`.
-- On either fault the app posts a Discord notice (reuses
+- **Idle positioning** — when the armed turret becomes idle, it stops continuous
+  motion and returns once to the saved pan/tilt center. Random eye animation does
+  not move the physical turret.
+- On a liveness fault the app posts a Discord notice (reuses
   `CAT_CANNON_DISCORD_WEBHOOK_URL`) and exits with sentinel code **70**.
 - The **guardian** (`scripts/run_guardian.sh` → `cat_cannon.app.guardian`) runs
   the app as a child, relaunches it on sentinel-70/crash, and escalates to
@@ -229,9 +227,8 @@ How it works:
   `restart_window_s` (state persisted at `state_path`).
 
 The heartbeat only arms once a turret camera **and** a live controller are
-present, so dry-runs and camera-less benches never false-trip. When enabled it
-takes over idle turret motion (the random "look-around" still moves the eyes but
-not the servos) to avoid double-moves.
+present, so dry-runs and camera-less benches never false-trip. The random
+"look-around" animation moves the eyes but not the servos.
 
 Quick manual test (no hardware reboot):
 
