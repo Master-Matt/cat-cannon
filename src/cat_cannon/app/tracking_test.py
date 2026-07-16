@@ -66,7 +66,7 @@ class TrackingTestConfig:
     fire_ms: int = 120
     step_deg: float = 3.0
     tilt_step_deg: float = 3.0
-    tilt_up_step_deg: float = 8.0
+    tilt_up_step_deg: float = 3.0
     config_path: str = "configs/app.yaml"
     zones_path: str = "configs/zones.yaml"
     yolo_model: str = "yolo11s.pt"
@@ -659,7 +659,7 @@ def parse_args(argv: list[str] | None = None) -> TrackingTestConfig:
     parser.add_argument("--fire-ms", type=int, default=120)
     parser.add_argument("--step-deg", type=float, default=3.0)
     parser.add_argument("--tilt-step-deg", type=float, default=3.0)
-    parser.add_argument("--tilt-up-step-deg", type=float, default=8.0)
+    parser.add_argument("--tilt-up-step-deg", type=float, default=3.0)
     parser.add_argument("--fixed-camera-width", type=int, default=1280)
     parser.add_argument("--fixed-camera-height", type=int, default=720)
     parser.add_argument("--turret-camera-width", type=int, default=1280)

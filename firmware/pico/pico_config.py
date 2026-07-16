@@ -7,9 +7,11 @@ SOLENOID_PIN = 2
 SOLENOID_ACTIVE_LOW = False
 STATUS_LED_PIN = "LED"
 
-PAN_MIN_DEG = 0.0
+# The positional 360-degree pan axis is centered at 0 so guided calibration can
+# save limits on either side of center, including a negative right-hand limit.
+PAN_MIN_DEG = -180.0
 PAN_MAX_DEG = 180.0
-PAN_HOME_DEG = 90.0
+PAN_HOME_DEG = 0.0
 
 TILT_MIN_DEG = 30.0
 TILT_MAX_DEG = 150.0

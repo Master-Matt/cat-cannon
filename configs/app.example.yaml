@@ -35,7 +35,9 @@ tracking:
   aim_offset_y_px: 20
   servo_center_pan_deg: 0
   servo_center_tilt_deg: 0
-  servo_min_pan_deg: 0
+  # A positional 360-degree pan servo uses 0 as center, allowing calibrated
+  # left/right limits on both the positive and negative sides.
+  servo_min_pan_deg: -180
   servo_max_pan_deg: 180
   # Tilt is gravity-loaded, so the servo can lose drive torque near its travel
   # extremes (it still holds position but won't move under load until nudged).

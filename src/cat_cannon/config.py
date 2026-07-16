@@ -147,7 +147,7 @@ class HeartbeatConfig:
 
 @dataclass(frozen=True)
 class ServoLimits:
-    pan_min_deg: float = 0.0
+    pan_min_deg: float = -180.0
     pan_max_deg: float = 180.0
     tilt_min_deg: float = 30.0
     tilt_max_deg: float = 150.0
@@ -207,7 +207,7 @@ def load_system_config(path: str | Path) -> SystemConfig:
     tuning = raw.get("tracking_tuning", {})
 
     servo_limits = ServoLimits(
-        pan_min_deg=float(tracking.get("servo_min_pan_deg", 0.0)),
+        pan_min_deg=float(tracking.get("servo_min_pan_deg", -180.0)),
         pan_max_deg=float(tracking.get("servo_max_pan_deg", 180.0)),
         tilt_min_deg=float(tracking.get("servo_min_tilt_deg", 30.0)),
         tilt_max_deg=float(tracking.get("servo_max_tilt_deg", 150.0)),
@@ -662,7 +662,7 @@ def _parse_yoloe_prompts(raw_prompts: object) -> tuple[YoloPrompt, ...]:
 
 def _servo_limits_from_tracking(tracking: dict) -> ServoLimits:
     return ServoLimits(
-        pan_min_deg=float(tracking.get("servo_min_pan_deg", 0.0)),
+        pan_min_deg=float(tracking.get("servo_min_pan_deg", -180.0)),
         pan_max_deg=float(tracking.get("servo_max_pan_deg", 180.0)),
         tilt_min_deg=float(tracking.get("servo_min_tilt_deg", 30.0)),
         tilt_max_deg=float(tracking.get("servo_max_tilt_deg", 150.0)),
