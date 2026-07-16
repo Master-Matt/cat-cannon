@@ -15,13 +15,23 @@ class FakeAbsoluteController:
         self.angles.append((pan_deg, tilt_deg))
 
 
+def _calibration(*, pan_deg: float = 0.0, tilt_deg: float = 0.0) -> TrackingCalibration:
+    return TrackingCalibration(
+        horizontal_deadband_px=0.0,
+        vertical_deadband_px=0.0,
+        horizontal_gain=0.0,
+        vertical_gain=0.0,
+        aim_offset_x_px=0.0,
+        aim_offset_y_px=0.0,
+        servo_center_pan_deg=pan_deg,
+        servo_center_tilt_deg=tilt_deg,
+    )
+
+
 def test_armed_idle_returns_to_saved_center_once() -> None:
     controller = FakeAbsoluteController()
     centering = IdleCentering()
-    calibration = TrackingCalibration(
-        servo_center_pan_deg=6.0,
-        servo_center_tilt_deg=104.0,
-    )
+    calibration = _calibration(pan_deg=6.0, tilt_deg=104.0)
 
     first = centering.update(
         controller=controller,
@@ -47,10 +57,7 @@ def test_armed_idle_returns_to_saved_center_once() -> None:
 def test_idle_centering_runs_again_after_tracking() -> None:
     controller = FakeAbsoluteController()
     centering = IdleCentering()
-    calibration = TrackingCalibration(
-        servo_center_pan_deg=-12.0,
-        servo_center_tilt_deg=90.0,
-    )
+    calibration = _calibration(pan_deg=-12.0, tilt_deg=90.0)
     limits = ServoLimits()
 
     centering.update(
@@ -81,10 +88,7 @@ def test_idle_centering_runs_again_after_tracking() -> None:
 def test_idle_centering_uses_axis_midpoint_for_out_of_range_center() -> None:
     controller = FakeAbsoluteController()
     centering = IdleCentering()
-    calibration = TrackingCalibration(
-        servo_center_pan_deg=0.0,
-        servo_center_tilt_deg=0.0,
-    )
+    calibration = _calibration()
 
     centering.update(
         controller=controller,
@@ -104,7 +108,7 @@ def test_disarmed_idle_does_not_move_turret() -> None:
         controller=controller,
         armed=False,
         idle=True,
-        calibration=TrackingCalibration(),
+        calibration=_calibration(),
         limits=ServoLimits(),
     )
 
