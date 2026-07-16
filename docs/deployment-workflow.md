@@ -216,9 +216,10 @@ How it works:
 - **Liveness** — the detection loop emits a beat each iteration. A separate
   health-monitor thread flags a `hang` if no beat arrives within
   `liveness_timeout_s`.
-- **Idle positioning** — when the armed turret becomes idle, it stops continuous
-  motion and returns once to the saved pan/tilt center. Random eye animation does
-  not move the physical turret.
+- **Idle positioning** — after the armed turret sees no cat or person on either
+  camera for 30 continuous seconds, it returns once to the saved pan/tilt center.
+  Any new detection resets the timer. Random eye animation does not move the
+  physical turret.
 - On a liveness fault the app posts a Discord notice (reuses
   `CAT_CANNON_DISCORD_WEBHOOK_URL`) and exits with sentinel code **70**.
 - The **guardian** (`scripts/run_guardian.sh` → `cat_cannon.app.guardian`) runs

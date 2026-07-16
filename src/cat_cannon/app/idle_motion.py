@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from cat_cannon.config import ServoLimits
 from cat_cannon.domain.targeting import TrackingCalibration
+
+RETURN_TO_CENTER_DELAY_SECONDS = 30.0
 
 
 class AbsoluteTurretController(Protocol):
@@ -25,9 +28,11 @@ def _configured_center_or_midpoint(center: float, minimum: float, maximum: float
 
 @dataclass
 class IdleCentering:
-    """Return the turret to its configured center once per armed-idle period."""
+    """Return the turret to center after a continuous armed-idle period."""
 
+    return_delay_seconds: float = RETURN_TO_CENTER_DELAY_SECONDS
     _center_commanded: bool = field(default=False, init=False)
+    _idle_started_at: float | None = field(default=None, init=False)
 
     def update(
         self,
@@ -37,11 +42,20 @@ class IdleCentering:
         idle: bool,
         calibration: TrackingCalibration,
         limits: ServoLimits,
+        now: float | None = None,
     ) -> bool:
         if not armed or not idle:
             self._center_commanded = False
+            self._idle_started_at = None
             return False
         if self._center_commanded:
+            return False
+
+        now_s = time.monotonic() if now is None else float(now)
+        if self._idle_started_at is None:
+            self._idle_started_at = now_s
+        idle_seconds = max(0.0, now_s - self._idle_started_at)
+        if idle_seconds < max(0.0, self.return_delay_seconds):
             return False
 
         normalized_limits = limits.normalized()

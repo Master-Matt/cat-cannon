@@ -28,28 +28,48 @@ def _calibration(*, pan_deg: float = 0.0, tilt_deg: float = 0.0) -> TrackingCali
     )
 
 
-def test_armed_idle_returns_to_saved_center_once() -> None:
+def test_armed_idle_returns_to_saved_center_after_thirty_seconds_once() -> None:
     controller = FakeAbsoluteController()
     centering = IdleCentering()
     calibration = _calibration(pan_deg=6.0, tilt_deg=104.0)
 
-    first = centering.update(
+    started = centering.update(
         controller=controller,
         armed=True,
         idle=True,
         calibration=calibration,
         limits=ServoLimits(),
+        now=100.0,
     )
-    second = centering.update(
+    too_early = centering.update(
         controller=controller,
         armed=True,
         idle=True,
         calibration=calibration,
         limits=ServoLimits(),
+        now=129.999,
+    )
+    centered = centering.update(
+        controller=controller,
+        armed=True,
+        idle=True,
+        calibration=calibration,
+        limits=ServoLimits(),
+        now=130.0,
+    )
+    repeated = centering.update(
+        controller=controller,
+        armed=True,
+        idle=True,
+        calibration=calibration,
+        limits=ServoLimits(),
+        now=131.0,
     )
 
-    assert first is True
-    assert second is False
+    assert started is False
+    assert too_early is False
+    assert centered is True
+    assert repeated is False
     assert controller.velocities == [(0.0, 0.0)]
     assert controller.angles == [(6.0, 104.0)]
 
@@ -66,13 +86,7 @@ def test_idle_centering_runs_again_after_tracking() -> None:
         idle=True,
         calibration=calibration,
         limits=limits,
-    )
-    centering.update(
-        controller=controller,
-        armed=True,
-        idle=False,
-        calibration=calibration,
-        limits=limits,
+        now=0.0,
     )
     centering.update(
         controller=controller,
@@ -80,9 +94,70 @@ def test_idle_centering_runs_again_after_tracking() -> None:
         idle=True,
         calibration=calibration,
         limits=limits,
+        now=30.0,
+    )
+    centering.update(
+        controller=controller,
+        armed=True,
+        idle=False,
+        calibration=calibration,
+        limits=limits,
+        now=31.0,
+    )
+    centering.update(
+        controller=controller,
+        armed=True,
+        idle=True,
+        calibration=calibration,
+        limits=limits,
+        now=32.0,
+    )
+    centering.update(
+        controller=controller,
+        armed=True,
+        idle=True,
+        calibration=calibration,
+        limits=limits,
+        now=62.0,
     )
 
     assert controller.angles == [(-12.0, 90.0), (-12.0, 90.0)]
+
+
+def test_detection_resets_idle_timer_before_centering() -> None:
+    controller = FakeAbsoluteController()
+    centering = IdleCentering()
+    calibration = _calibration(pan_deg=8.0, tilt_deg=91.0)
+    limits = ServoLimits()
+
+    for idle, now in (
+        (True, 10.0),
+        (True, 39.0),
+        (False, 39.5),
+        (True, 40.0),
+        (True, 69.999),
+    ):
+        moved = centering.update(
+            controller=controller,
+            armed=True,
+            idle=idle,
+            calibration=calibration,
+            limits=limits,
+            now=now,
+        )
+        assert moved is False
+
+    moved = centering.update(
+        controller=controller,
+        armed=True,
+        idle=True,
+        calibration=calibration,
+        limits=limits,
+        now=70.0,
+    )
+
+    assert moved is True
+    assert controller.angles == [(8.0, 91.0)]
 
 
 def test_idle_centering_uses_axis_midpoint_for_out_of_range_center() -> None:
@@ -96,6 +171,15 @@ def test_idle_centering_uses_axis_midpoint_for_out_of_range_center() -> None:
         idle=True,
         calibration=calibration,
         limits=ServoLimits(tilt_min_deg=45.0, tilt_max_deg=135.0),
+        now=0.0,
+    )
+    centering.update(
+        controller=controller,
+        armed=True,
+        idle=True,
+        calibration=calibration,
+        limits=ServoLimits(tilt_min_deg=45.0, tilt_max_deg=135.0),
+        now=30.0,
     )
 
     assert controller.angles == [(0.0, 90.0)]
@@ -110,6 +194,7 @@ def test_disarmed_idle_does_not_move_turret() -> None:
         idle=True,
         calibration=_calibration(),
         limits=ServoLimits(),
+        now=100.0,
     )
 
     assert moved is False

@@ -717,8 +717,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     armed=state.armed,
                     idle=(
                         step_result.state is SupervisorState.IDLE
-                        and not step_result.human_present
-                        and not step_result.target_visible
+                        and not fixed_detections
+                        and not turret_detections
                     ),
                     calibration=_sys_config.tracking_calibration,
                     limits=_sys_config.servo_limits,
