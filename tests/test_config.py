@@ -25,7 +25,7 @@ def test_example_config_uses_twenty_five_pixel_aim_lock_deadband() -> None:
 def test_example_config_exposes_servo_motion_limits() -> None:
     config = load_system_config("configs/app.example.yaml")
 
-    assert config.servo_limits.pan_min_deg == 0
+    assert config.servo_limits.pan_min_deg == -180
     assert config.servo_limits.pan_max_deg == 180
     # Tilt is narrowed to the reliably drivable band (gravity-loaded axis loses
     # drive torque near the 30/150 mechanical extremes); see app.example.yaml.
@@ -364,7 +364,7 @@ tracking:
 
     limits = clear_servo_limits(config_path)
 
-    assert limits.pan_min_deg == 0
+    assert limits.pan_min_deg == -180
     assert limits.pan_max_deg == 180
     assert limits.tilt_min_deg == 30
     assert limits.tilt_max_deg == 150

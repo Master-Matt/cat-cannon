@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -50,6 +51,9 @@ def _load_pico_main(monkeypatch):
         "uselect",
         types.SimpleNamespace(POLLIN=1, poll=lambda: FakePoll()),
     )
+    monkeypatch.setattr(time, "ticks_ms", lambda: 0, raising=False)
+    monkeypatch.setattr(time, "ticks_diff", lambda first, second: first - second, raising=False)
+    monkeypatch.setattr(time, "ticks_add", lambda value, delta: value + delta, raising=False)
     sys.modules.pop("pico_config", None)
     module_name = "_cat_cannon_pico_main_test"
     sys.modules.pop(module_name, None)
@@ -81,3 +85,27 @@ def test_soft_servo_limits_only_clamp_target_angle(monkeypatch) -> None:
 
     assert servo.angle_deg == 89.0
     assert servo._pwm.duties[-1] == expected_duty_at_89
+
+
+def test_pan_servo_accepts_negative_angle_commands(monkeypatch) -> None:
+    pico_main = _load_pico_main(monkeypatch)
+    controller = pico_main.Controller()
+
+    controller.handle(
+        {
+            "seq": 1,
+            "command": "set_angles",
+            "payload": {"pan_deg": 0.0, "tilt_deg": 90.0},
+        }
+    )
+    response = controller.handle(
+        {
+            "seq": 2,
+            "command": "apply_delta",
+            "payload": {"pan_delta_deg": -3.0, "tilt_delta_deg": 0.0},
+        }
+    )
+
+    assert controller.pan.min_deg == -180.0
+    assert controller.pan.angle_deg == -3.0
+    assert response["payload"]["pan_deg"] == -3.0

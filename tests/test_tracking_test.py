@@ -324,7 +324,7 @@ def test_tracking_control_starts_guided_limit_flow_with_limits_disabled() -> Non
     assert "move to top" in result.message
     assert controller.limit_commands == [
         {
-            "pan_min_deg": 0.0,
+            "pan_min_deg": -180.0,
             "pan_max_deg": 180.0,
             "tilt_min_deg": 30.0,
             "tilt_max_deg": 150.0,
@@ -436,7 +436,7 @@ tracking:
     assert saved["tracking"]["servo_max_tilt_deg"] == 110.0
     assert controller.limit_commands == [
         {
-            "pan_min_deg": 0.0,
+            "pan_min_deg": -180.0,
             "pan_max_deg": 180.0,
             "tilt_min_deg": 30.0,
             "tilt_max_deg": 150.0,
@@ -515,7 +515,7 @@ tracking:
     assert "servo_max_tilt_deg" not in saved["tracking"]
     assert controller.limit_commands == [
         {
-            "pan_min_deg": 0.0,
+            "pan_min_deg": -180.0,
             "pan_max_deg": 180.0,
             "tilt_min_deg": 30.0,
             "tilt_max_deg": 150.0,
@@ -748,6 +748,12 @@ def test_tracking_test_config_defaults_to_named_device_symlinks() -> None:
     assert config.turret_camera_width == 1280
     assert config.turret_camera_height == 720
     assert config.zones_path == "configs/zones.yaml"
+
+
+def test_tracking_test_defaults_to_equal_tilt_steps() -> None:
+    config = TrackingTestConfig()
+
+    assert config.tilt_up_step_deg == config.tilt_step_deg
 
 
 def test_tilt_up_uses_up_step_and_down_uses_tilt_step() -> None:
