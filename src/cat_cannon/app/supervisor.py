@@ -378,11 +378,7 @@ class SupervisorLoop:
             and turret_frame_width is not None
             and turret_frame_height is not None
         )
-        if (
-            armed
-            and turret_camera_available
-            and (should_track or should_lead_from_fixed)
-        ):
+        if armed and turret_camera_available:
             turret_target = self._find_turret_target(
                 turret_detections,
                 policy,

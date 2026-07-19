@@ -10,7 +10,7 @@ from typing import Literal
 import numpy as np
 
 from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
-from cat_cannon.app.idle_motion import IdleCentering, has_centering_activity
+from cat_cannon.app.idle_motion import IdleCentering, has_fresh_detection
 from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, EventRecordingConfig, YoloPrompt
 from cat_cannon.domain.models import SupervisorState
 
@@ -715,9 +715,10 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 idle_centering.update(
                     controller=_ctrl,
                     armed=state.armed,
-                    detection_present=has_centering_activity(
-                        human_present=step_result.human_present,
-                        correction_present=step_result.correction is not None,
+                    detection_present=has_fresh_detection(
+                        fixed_detections=fixed_detections,
+                        fixed_detection_updated=fixed_detection_updated,
+                        turret_detections=turret_detections,
                     ),
                     calibration=_sys_config.tracking_calibration,
                     limits=_sys_config.servo_limits,

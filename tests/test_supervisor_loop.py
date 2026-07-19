@@ -269,7 +269,7 @@ def test_supervisor_uses_turret_camera_for_targeting_when_available() -> None:
     assert len(controller.pan_commands) == 0
 
 
-def test_supervisor_does_not_track_turret_only_cat_while_idle() -> None:
+def test_supervisor_tracks_turret_only_cat_while_idle() -> None:
     supervisor, controller = _supervisor()
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
 
@@ -285,13 +285,13 @@ def test_supervisor_does_not_track_turret_only_cat_while_idle() -> None:
 
     assert result.state == SupervisorState.IDLE
     assert result.target_visible is False
-    assert result.turret_target_visible is False
-    assert result.correction is None
-    assert controller.pan_commands == []
-    assert controller.tilt_commands == []
+    assert result.turret_target_visible is True
+    assert result.correction is not None
+    assert controller.pan_commands
+    assert controller.tilt_commands
 
 
-def test_supervisor_stops_tracking_when_fixed_target_context_expires() -> None:
+def test_supervisor_tracks_current_turret_target_after_fixed_context_expires() -> None:
     supervisor, controller = _supervisor()
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
 
@@ -323,9 +323,9 @@ def test_supervisor_stops_tracking_when_fixed_target_context_expires() -> None:
     )
 
     assert stale_result.counter_confirmed is True
-    assert stale_result.correction is None
-    assert controller.pan_commands == []
-    assert controller.tilt_commands == []
+    assert stale_result.correction is not None
+    assert controller.pan_commands
+    assert controller.tilt_commands
 
 
 def test_supervisor_leads_turret_horizontally_from_fixed_zone_when_turret_target_missing() -> None:
@@ -727,7 +727,7 @@ def test_supervisor_does_not_track_turret_people_by_default() -> None:
     assert controller.tilt_commands == []
 
 
-def test_supervisor_does_not_track_turret_people_without_active_fixed_target() -> None:
+def test_supervisor_tracks_turret_people_when_enabled_but_hysteresis_controls_lockout() -> None:
     supervisor, controller = _supervisor()
 
     turret_person = Detection("person-1", "person", 0.95, BoundingBox(20, 20, 20, 20))
@@ -749,9 +749,8 @@ def test_supervisor_does_not_track_turret_people_without_active_fixed_target() -
     assert result.human_present is True
     assert result.state == SupervisorState.HUMAN_LOCKOUT
     assert result.fire_commanded is False
-    assert result.correction is None
-    assert controller.pan_commands == []
-    assert controller.tilt_commands == []
+    assert result.correction is not None
+    assert controller.pan_commands
     assert controller.fired == 0
 
 

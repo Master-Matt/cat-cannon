@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -26,13 +27,16 @@ def _configured_center_or_midpoint(center: float, minimum: float, maximum: float
     return (lower + upper) / 2.0
 
 
-def has_centering_activity(
+def has_fresh_detection(
     *,
-    human_present: bool,
-    correction_present: bool,
+    fixed_detections: Collection[object],
+    fixed_detection_updated: bool,
+    turret_detections: Collection[object] | None,
 ) -> bool:
-    """Report detection activity that can legitimately keep the turret off-center."""
-    return human_present or correction_present
+    """Report cat/person detections observed during the current camera reads."""
+    return bool(turret_detections) or (
+        fixed_detection_updated and bool(fixed_detections)
+    )
 
 
 @dataclass
