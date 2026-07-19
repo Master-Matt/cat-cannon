@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -27,16 +26,13 @@ def _configured_center_or_midpoint(center: float, minimum: float, maximum: float
     return (lower + upper) / 2.0
 
 
-def has_fresh_detection(
+def has_centering_activity(
     *,
-    fixed_detections: Collection[object],
-    fixed_detection_updated: bool,
-    turret_detections: Collection[object] | None,
+    human_present: bool,
+    correction_present: bool,
 ) -> bool:
-    """Report only detections observed during the current camera reads."""
-    return bool(turret_detections) or (
-        fixed_detection_updated and bool(fixed_detections)
-    )
+    """Report detection activity that can legitimately keep the turret off-center."""
+    return human_present or correction_present
 
 
 @dataclass
@@ -46,6 +42,7 @@ class IdleCentering:
     return_delay_seconds: float = RETURN_TO_CENTER_DELAY_SECONDS
     _center_commanded: bool = field(default=False, init=False)
     _quiet_started_at: float | None = field(default=None, init=False)
+    _failure_logged: bool = field(default=False, init=False)
 
     def update(
         self,
@@ -60,6 +57,7 @@ class IdleCentering:
         if not armed or detection_present:
             self._center_commanded = False
             self._quiet_started_at = None
+            self._failure_logged = False
             return False
         if self._center_commanded:
             return False
@@ -86,8 +84,16 @@ class IdleCentering:
         try:
             controller.set_velocity(0.0, 0.0)
             controller.set_angles(pan_center, tilt_center)
-        except Exception:
+        except Exception as exc:
+            if not self._failure_logged:
+                print(f"[idle-centering] center command failed: {exc!r}", flush=True)
+                self._failure_logged = True
             return False
 
         self._center_commanded = True
+        print(
+            "[idle-centering] "
+            f"centered pan={pan_center:.2f} tilt={tilt_center:.2f}",
+            flush=True,
+        )
         return True

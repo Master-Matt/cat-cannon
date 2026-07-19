@@ -85,7 +85,7 @@ class SupervisorLoop:
         self._last_fixed_lead_cat: Detection | None = None
         self._last_fixed_lead_frame_width = 0
         self._last_fixed_lead_frame_height = 0
-        self._last_fixed_lead_at = 0.0
+        self._last_fixed_lead_at: float | None = None
 
     def _find_turret_cat(
         self,
@@ -346,7 +346,13 @@ class SupervisorLoop:
             SupervisorState.FIRE,
             SupervisorState.COOLDOWN,
         }
-        should_track = target_visible or self._machine.state in tracking_states
+        fixed_target_recent = (
+            self._last_fixed_lead_at is not None
+            and now_s - self._last_fixed_lead_at <= 2.0
+        )
+        should_track = (
+            target_visible or self._machine.state in tracking_states
+        ) and fixed_target_recent
         fixed_lead_cat = (
             assessment.candidate_cat
             if fixed_detections_fresh and assessment.cat_on_counter
@@ -354,7 +360,11 @@ class SupervisorLoop:
         )
         fixed_lead_frame_width = frame_width
         fixed_lead_frame_height = frame_height
-        if fixed_lead_cat is None and self._last_fixed_lead_cat is not None:
+        if (
+            fixed_lead_cat is None
+            and self._last_fixed_lead_cat is not None
+            and self._last_fixed_lead_at is not None
+        ):
             if now_s - self._last_fixed_lead_at <= 2.0:
                 fixed_lead_cat = self._last_fixed_lead_cat
                 fixed_lead_frame_width = self._last_fixed_lead_frame_width
@@ -368,7 +378,11 @@ class SupervisorLoop:
             and turret_frame_width is not None
             and turret_frame_height is not None
         )
-        if armed and turret_camera_available:
+        if (
+            armed
+            and turret_camera_available
+            and (should_track or should_lead_from_fixed)
+        ):
             turret_target = self._find_turret_target(
                 turret_detections,
                 policy,

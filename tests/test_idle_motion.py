@@ -1,4 +1,4 @@
-from cat_cannon.app.idle_motion import IdleCentering, has_fresh_detection
+from cat_cannon.app.idle_motion import IdleCentering, has_centering_activity
 from cat_cannon.config import ServoLimits
 from cat_cannon.domain.targeting import TrackingCalibration
 
@@ -202,24 +202,19 @@ def test_disarmed_idle_does_not_move_turret() -> None:
     assert controller.angles == []
 
 
-def test_stale_fixed_detection_does_not_block_idle_timer() -> None:
-    assert has_fresh_detection(
-        fixed_detections=[object()],
-        fixed_detection_updated=False,
-        turret_detections=[],
+def test_non_actionable_detection_does_not_block_idle_timer() -> None:
+    assert has_centering_activity(
+        human_present=False,
+        correction_present=False,
     ) is False
 
 
-def test_fresh_detection_from_either_camera_resets_idle_timer() -> None:
-    detection = object()
-
-    assert has_fresh_detection(
-        fixed_detections=[detection],
-        fixed_detection_updated=True,
-        turret_detections=[],
+def test_actionable_detection_resets_idle_timer() -> None:
+    assert has_centering_activity(
+        human_present=True,
+        correction_present=False,
     ) is True
-    assert has_fresh_detection(
-        fixed_detections=[],
-        fixed_detection_updated=False,
-        turret_detections=[detection],
+    assert has_centering_activity(
+        human_present=False,
+        correction_present=True,
     ) is True
