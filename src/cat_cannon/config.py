@@ -60,6 +60,7 @@ class TrackingTuning:
     fire_requires_turret_target: bool = True
     fire_aim_tolerance_px: float = 45.0
     fire_pan_tolerance_deg: float = 12.0
+    stuck_limit_seconds: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -236,6 +237,9 @@ def load_system_config(path: str | Path) -> SystemConfig:
             ),
             fire_pan_tolerance_deg=max(
                 0.0, float(tuning.get("fire_pan_tolerance_deg", 12.0))
+            ),
+            stuck_limit_seconds=max(
+                0.0, float(tuning.get("stuck_limit_seconds", 10.0))
             ),
         ),
         human_lockout=_human_lockout_config_from_raw(raw),

@@ -26,9 +26,11 @@ class TurretController(Protocol):
     def set_velocity(self, pan_deg_s: float, tilt_deg_s: float) -> None:
         """Set continuous servo velocity in degrees/sec."""
 
+    def set_angles(self, pan_deg: float, tilt_deg: float) -> object:
+        """Move both axes to absolute calibrated angles."""
+
     def fire(self) -> None:
         """Trigger one bounded actuation pulse."""
 
     def safe_stop(self) -> None:
         """Force the controller into a non-firing safe state."""
-

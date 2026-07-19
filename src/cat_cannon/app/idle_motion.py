@@ -27,6 +27,26 @@ def _configured_center_or_midpoint(center: float, minimum: float, maximum: float
     return (lower + upper) / 2.0
 
 
+def configured_center_angles(
+    calibration: TrackingCalibration,
+    limits: ServoLimits,
+) -> tuple[float, float]:
+    """Return saved center angles, falling back to safe travel midpoints."""
+    normalized_limits = limits.normalized()
+    return (
+        _configured_center_or_midpoint(
+            calibration.servo_center_pan_deg,
+            normalized_limits.pan_min_deg,
+            normalized_limits.pan_max_deg,
+        ),
+        _configured_center_or_midpoint(
+            calibration.servo_center_tilt_deg,
+            normalized_limits.tilt_min_deg,
+            normalized_limits.tilt_max_deg,
+        ),
+    )
+
+
 def has_fresh_detection(
     *,
     fixed_detections: Collection[object],
@@ -73,17 +93,7 @@ class IdleCentering:
         if quiet_seconds < max(0.0, self.return_delay_seconds):
             return False
 
-        normalized_limits = limits.normalized()
-        pan_center = _configured_center_or_midpoint(
-            calibration.servo_center_pan_deg,
-            normalized_limits.pan_min_deg,
-            normalized_limits.pan_max_deg,
-        )
-        tilt_center = _configured_center_or_midpoint(
-            calibration.servo_center_tilt_deg,
-            normalized_limits.tilt_min_deg,
-            normalized_limits.tilt_max_deg,
-        )
+        pan_center, tilt_center = configured_center_angles(calibration, limits)
 
         try:
             controller.set_velocity(0.0, 0.0)

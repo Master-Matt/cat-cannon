@@ -45,6 +45,7 @@ def test_example_config_requires_turret_target_for_firing() -> None:
     assert config.tracking_tuning.fire_requires_turret_target is True
     assert config.tracking_tuning.fire_aim_tolerance_px == 45
     assert config.tracking_tuning.fire_pan_tolerance_deg == 12
+    assert config.tracking_tuning.stuck_limit_seconds == 10
 
 
 def test_system_config_can_use_wall_clock_fire_cooldown(tmp_path: Path) -> None:

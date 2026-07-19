@@ -220,7 +220,10 @@ How it works:
   from the turret camera. After neither camera reports a current detection for
   10 continuous seconds, it returns once to the saved pan/tilt center. Stale
   fixed-camera frames do not reset the timer, and random eye animation does not
-  move the physical turret.
+  move the physical turret. If a detection remains unlocked while pushing into
+  a hard servo limit for 10 seconds, the supervisor also returns to center and
+  quarantines that same correction direction until the target clears, centers,
+  or moves to the opposite side.
 - On a liveness fault the app posts a Discord notice (reuses
   `CAT_CANNON_DISCORD_WEBHOOK_URL`) and exits with sentinel code **70**.
 - The **guardian** (`scripts/run_guardian.sh` → `cat_cannon.app.guardian`) runs

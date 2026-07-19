@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from cat_cannon.adapters.interfaces import TurretController
+from cat_cannon.app.idle_motion import configured_center_angles
 from cat_cannon.config import HumanLockoutConfig, SystemConfig, scale_counter_zones
 from cat_cannon.domain.models import CounterZone, Detection, SupervisorState
 from cat_cannon.domain.safety import CounterConfirmation, DetectionPolicy, assess_scene
@@ -29,6 +30,7 @@ class SupervisorStepResult:
     turret_direction_aligned: bool = True
     fire_permitted: bool = False
     fixed_zone_fresh: bool = True
+    corner_recovery_active: bool = False
 
 
 class HumanLockoutHysteresis:
@@ -86,6 +88,11 @@ class SupervisorLoop:
         self._last_fixed_lead_frame_width = 0
         self._last_fixed_lead_frame_height = 0
         self._last_fixed_lead_at: float | None = None
+        self._stuck_limit_started_at: float | None = None
+        self._stuck_limit_directions: tuple[int, int] = (0, 0)
+        self._corner_recovery_active = False
+        self._corner_recovery_directions: tuple[int, int] = (0, 0)
+        self._corner_recovery_failure_logged = False
 
     def _find_turret_cat(
         self,
@@ -251,6 +258,119 @@ class SupervisorLoop:
         if abs(cmd_pan) > tuning.deadband_deg or abs(cmd_tilt) > tuning.deadband_deg:
             self.controller.apply_tracking_delta(cmd_pan, cmd_tilt)
 
+    @staticmethod
+    def _direction(value: float) -> int:
+        if value > 0.0:
+            return 1
+        if value < 0.0:
+            return -1
+        return 0
+
+    def _outward_limit_directions(
+        self,
+        correction: TurretCorrection,
+    ) -> tuple[int, int]:
+        """Return camera-space directions still pushing into physical limits."""
+        status = getattr(self.controller, "last_status_payload", {}) or {}
+        pan_sign = getattr(self.controller, "pan_delta_sign", 1)
+        tilt_sign = getattr(self.controller, "tilt_delta_sign", 1)
+        pan_firmware_dir = self._direction(pan_sign * correction.pan_delta)
+        tilt_firmware_dir = self._direction(tilt_sign * correction.tilt_delta)
+
+        pan_outward = (pan_firmware_dir > 0 and status.get("pan_at_max")) or (
+            pan_firmware_dir < 0 and status.get("pan_at_min")
+        )
+        tilt_outward = (tilt_firmware_dir > 0 and status.get("tilt_at_max")) or (
+            tilt_firmware_dir < 0 and status.get("tilt_at_min")
+        )
+        return (
+            self._direction(correction.pan_delta) if pan_outward else 0,
+            self._direction(correction.tilt_delta) if tilt_outward else 0,
+        )
+
+    def _reset_corner_recovery(self) -> None:
+        self._stuck_limit_started_at = None
+        self._stuck_limit_directions = (0, 0)
+        self._corner_recovery_active = False
+        self._corner_recovery_directions = (0, 0)
+        self._corner_recovery_failure_logged = False
+
+    def _recovery_still_blocks(self, correction: TurretCorrection) -> bool:
+        if not self._corner_recovery_active:
+            return False
+        if correction.aim_locked:
+            self._reset_corner_recovery()
+            return False
+
+        current_directions = (
+            self._direction(correction.pan_delta),
+            self._direction(correction.tilt_delta),
+        )
+        for blocked, current in zip(
+            self._corner_recovery_directions,
+            current_directions,
+            strict=True,
+        ):
+            if blocked and current == -blocked:
+                self._reset_corner_recovery()
+                return False
+        return True
+
+    def _recover_stuck_corner(
+        self,
+        correction: TurretCorrection,
+        *,
+        now: float,
+    ) -> bool:
+        """Center and quarantine a target that cannot converge at a hard limit."""
+        if self._recovery_still_blocks(correction):
+            self._filtered_pan = 0.0
+            self._filtered_tilt = 0.0
+            return True
+
+        directions = self._outward_limit_directions(correction)
+        if directions == (0, 0) or correction.aim_locked:
+            self._stuck_limit_started_at = None
+            self._stuck_limit_directions = (0, 0)
+            return False
+        if directions != self._stuck_limit_directions:
+            self._stuck_limit_started_at = now
+            self._stuck_limit_directions = directions
+
+        if self._stuck_limit_started_at is None:
+            self._stuck_limit_started_at = now
+        stuck_seconds = max(0.0, self.config.tracking_tuning.stuck_limit_seconds)
+        if now - self._stuck_limit_started_at < stuck_seconds:
+            return False
+
+        pan_center, tilt_center = configured_center_angles(
+            self.config.tracking_calibration,
+            self.config.servo_limits,
+        )
+        try:
+            self.controller.set_velocity(0.0, 0.0)
+            self.controller.set_angles(pan_center, tilt_center)
+        except Exception as exc:
+            if not self._corner_recovery_failure_logged:
+                print(f"[corner-recovery] center command failed: {exc!r}", flush=True)
+                self._corner_recovery_failure_logged = True
+            self._stuck_limit_started_at = now
+            return False
+
+        self._filtered_pan = 0.0
+        self._filtered_tilt = 0.0
+        self._corner_recovery_active = True
+        self._corner_recovery_directions = directions
+        self._stuck_limit_started_at = None
+        self._stuck_limit_directions = (0, 0)
+        self._corner_recovery_failure_logged = False
+        print(
+            "[corner-recovery] centered untrackable target "
+            f"pan={pan_center:.2f} tilt={tilt_center:.2f}",
+            flush=True,
+        )
+        return True
+
     def _fixed_camera_horizontal_lead(
         self,
         *,
@@ -284,6 +404,8 @@ class SupervisorLoop:
         now: float | None = None,
     ) -> SupervisorStepResult:
         now_s = time.monotonic() if now is None else float(now)
+        if not armed:
+            self._reset_corner_recovery()
         policy = detection_policy_override or self.config.detection_policy
         # Fixed camera: zone intersection + counter confirmation + human presence
         fixed_frame_zones = scale_counter_zones(
@@ -406,14 +528,18 @@ class SupervisorLoop:
                             frame_width=frame_width,
                         )
                     )
-                self._apply_ema_tracking(correction)
+                if not self._recover_stuck_corner(correction, now=now_s):
+                    self._apply_ema_tracking(correction)
             elif should_lead_from_fixed:
+                self._reset_corner_recovery()
                 correction = self._fixed_camera_horizontal_lead(
                     cat=fixed_lead_cat,
                     frame_width=fixed_lead_frame_width,
                     frame_height=fixed_lead_frame_height,
                 )
                 self._apply_ema_tracking(correction)
+            else:
+                self._reset_corner_recovery()
         elif armed and should_track and assessment.candidate_cat is not None:
             # Fallback: no turret camera, use fixed camera for targeting
             correction = compute_turret_correction(
@@ -498,6 +624,7 @@ class SupervisorLoop:
                 and assessment.active_zone_id is not None
                 and counter_confirmed
             ),
+            corner_recovery_active=self._corner_recovery_active,
         )
 
     def _log_activation_and_fire(

@@ -829,6 +829,178 @@ class _AtLimitController(NullTurretController):
                 "pan_at_max": False, "pan_at_min": False}
 
 
+class _PinnedCornerController(NullTurretController):
+    """Controller stub pinned at the physical bottom-left corner."""
+
+    tilt_delta_sign: int = 1
+    pan_delta_sign: int = -1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.angle_commands: list[tuple[float, float]] = []
+        self._status = {
+            "tilt_at_max": True,
+            "tilt_at_min": False,
+            "pan_at_max": True,
+            "pan_at_min": False,
+        }
+
+    @property
+    def last_status_payload(self) -> dict:
+        return dict(self._status)
+
+    def set_angles(self, pan_deg: float, tilt_deg: float) -> None:
+        self.angle_commands.append((pan_deg, tilt_deg))
+        self._status.update(tilt_at_max=False, pan_at_max=False)
+
+
+def _corner_supervisor(
+    *,
+    stuck_limit_seconds: float,
+) -> tuple[SupervisorLoop, _PinnedCornerController, Detection]:
+    controller = _PinnedCornerController()
+    tuning = TrackingTuning(
+        ema_alpha=1.0,
+        gain=0.5,
+        pan_clamp_deg=3.0,
+        tilt_clamp_deg=3.0,
+        deadband_deg=0.1,
+        stuck_limit_seconds=stuck_limit_seconds,
+    )
+    config = SystemConfig(
+        cooldown_frames=2,
+        detection_policy=DetectionPolicy(
+            cat_class="cat",
+            person_class="person",
+            cat_confidence_threshold=0.4,
+            person_confidence_threshold=0.5,
+            consecutive_counter_frames=2,
+            confirmation_miss_tolerance_frames=5,
+        ),
+        tracking_calibration=TrackingCalibration(
+            horizontal_deadband_px=20,
+            vertical_deadband_px=20,
+            horizontal_gain=0.05,
+            vertical_gain=0.05,
+            aim_offset_x_px=0,
+            aim_offset_y_px=0,
+            servo_center_pan_deg=9.0,
+            servo_center_tilt_deg=84.15,
+        ),
+        servo_limits=ServoLimits(
+            pan_min_deg=-99.0,
+            pan_max_deg=117.0,
+            tilt_min_deg=63.15,
+            tilt_max_deg=93.15,
+        ),
+        tracking_tuning=tuning,
+    )
+    supervisor = SupervisorLoop(config=config, zones=[], controller=controller)
+    bottom_left_cat = Detection("cat-1", "cat", 0.92, BoundingBox(0, 160, 20, 20))
+    return supervisor, controller, bottom_left_cat
+
+
+def test_supervisor_recovers_target_stuck_at_corner_after_ten_seconds() -> None:
+    supervisor, controller, bottom_left_cat = _corner_supervisor(
+        stuck_limit_seconds=10.0
+    )
+
+    before_timeout = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[bottom_left_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.0,
+    )
+    still_waiting = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[bottom_left_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=9.999,
+    )
+    recovered = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[bottom_left_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=10.0,
+    )
+
+    assert before_timeout.corner_recovery_active is False
+    assert still_waiting.corner_recovery_active is False
+    assert recovered.corner_recovery_active is True
+    assert controller.angle_commands == [(9.0, 84.15)]
+
+
+def test_corner_recovery_quarantines_same_direction_until_target_clears() -> None:
+    supervisor, controller, bottom_left_cat = _corner_supervisor(
+        stuck_limit_seconds=0.0,
+    )
+
+    recovered = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[bottom_left_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=1.0,
+    )
+    controller.pan_commands.clear()
+    controller.tilt_commands.clear()
+    quarantined = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[bottom_left_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=1.1,
+    )
+    quarantined_pan_commands = list(controller.pan_commands)
+    quarantined_tilt_commands = list(controller.tilt_commands)
+    supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=1.2,
+    )
+    resumed = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[bottom_left_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=1.3,
+    )
+
+    assert recovered.corner_recovery_active is True
+    assert quarantined.corner_recovery_active is True
+    assert quarantined_pan_commands == []
+    assert quarantined_tilt_commands == []
+    assert controller.pan_commands
+    assert controller.tilt_commands
+    assert resumed.corner_recovery_active is False
+
+
 def test_apply_ema_tracking_stops_pushing_into_tilt_limit() -> None:
     tuning = TrackingTuning(
         ema_alpha=1.0, gain=0.5, pan_clamp_deg=3.0, tilt_clamp_deg=3.0, deadband_deg=0.1
