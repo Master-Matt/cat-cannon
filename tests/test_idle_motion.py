@@ -1,4 +1,4 @@
-from cat_cannon.app.idle_motion import IdleCentering
+from cat_cannon.app.idle_motion import IdleCentering, has_fresh_detection
 from cat_cannon.config import ServoLimits
 from cat_cannon.domain.targeting import TrackingCalibration
 
@@ -28,7 +28,7 @@ def _calibration(*, pan_deg: float = 0.0, tilt_deg: float = 0.0) -> TrackingCali
     )
 
 
-def test_armed_idle_returns_to_saved_center_after_thirty_seconds_once() -> None:
+def test_armed_idle_returns_to_saved_center_after_ten_seconds_once() -> None:
     controller = FakeAbsoluteController()
     centering = IdleCentering()
     calibration = _calibration(pan_deg=6.0, tilt_deg=104.0)
@@ -36,7 +36,7 @@ def test_armed_idle_returns_to_saved_center_after_thirty_seconds_once() -> None:
     started = centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=ServoLimits(),
         now=100.0,
@@ -44,26 +44,26 @@ def test_armed_idle_returns_to_saved_center_after_thirty_seconds_once() -> None:
     too_early = centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=ServoLimits(),
-        now=129.999,
+        now=109.999,
     )
     centered = centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=ServoLimits(),
-        now=130.0,
+        now=110.0,
     )
     repeated = centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=ServoLimits(),
-        now=131.0,
+        now=111.0,
     )
 
     assert started is False
@@ -83,7 +83,7 @@ def test_idle_centering_runs_again_after_tracking() -> None:
     centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=limits,
         now=0.0,
@@ -91,34 +91,34 @@ def test_idle_centering_runs_again_after_tracking() -> None:
     centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=limits,
-        now=30.0,
+        now=10.0,
     )
     centering.update(
         controller=controller,
         armed=True,
-        idle=False,
+        detection_present=True,
         calibration=calibration,
         limits=limits,
-        now=31.0,
+        now=11.0,
     )
     centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=limits,
-        now=32.0,
+        now=12.0,
     )
     centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=limits,
-        now=62.0,
+        now=22.0,
     )
 
     assert controller.angles == [(-12.0, 90.0), (-12.0, 90.0)]
@@ -130,17 +130,17 @@ def test_detection_resets_idle_timer_before_centering() -> None:
     calibration = _calibration(pan_deg=8.0, tilt_deg=91.0)
     limits = ServoLimits()
 
-    for idle, now in (
+    for detection_present, now in (
         (True, 10.0),
-        (True, 39.0),
-        (False, 39.5),
-        (True, 40.0),
-        (True, 69.999),
+        (False, 19.0),
+        (True, 19.5),
+        (False, 20.0),
+        (False, 29.999),
     ):
         moved = centering.update(
             controller=controller,
             armed=True,
-            idle=idle,
+            detection_present=detection_present,
             calibration=calibration,
             limits=limits,
             now=now,
@@ -150,10 +150,10 @@ def test_detection_resets_idle_timer_before_centering() -> None:
     moved = centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=limits,
-        now=70.0,
+        now=30.0,
     )
 
     assert moved is True
@@ -168,7 +168,7 @@ def test_idle_centering_uses_axis_midpoint_for_out_of_range_center() -> None:
     centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=ServoLimits(tilt_min_deg=45.0, tilt_max_deg=135.0),
         now=0.0,
@@ -176,10 +176,10 @@ def test_idle_centering_uses_axis_midpoint_for_out_of_range_center() -> None:
     centering.update(
         controller=controller,
         armed=True,
-        idle=True,
+        detection_present=False,
         calibration=calibration,
         limits=ServoLimits(tilt_min_deg=45.0, tilt_max_deg=135.0),
-        now=30.0,
+        now=10.0,
     )
 
     assert controller.angles == [(0.0, 90.0)]
@@ -191,7 +191,7 @@ def test_disarmed_idle_does_not_move_turret() -> None:
     moved = IdleCentering().update(
         controller=controller,
         armed=False,
-        idle=True,
+        detection_present=False,
         calibration=_calibration(),
         limits=ServoLimits(),
         now=100.0,
@@ -200,3 +200,26 @@ def test_disarmed_idle_does_not_move_turret() -> None:
     assert moved is False
     assert controller.velocities == []
     assert controller.angles == []
+
+
+def test_stale_fixed_detection_does_not_block_idle_timer() -> None:
+    assert has_fresh_detection(
+        fixed_detections=[object()],
+        fixed_detection_updated=False,
+        turret_detections=[],
+    ) is False
+
+
+def test_fresh_detection_from_either_camera_resets_idle_timer() -> None:
+    detection = object()
+
+    assert has_fresh_detection(
+        fixed_detections=[detection],
+        fixed_detection_updated=True,
+        turret_detections=[],
+    ) is True
+    assert has_fresh_detection(
+        fixed_detections=[],
+        fixed_detection_updated=False,
+        turret_detections=[detection],
+    ) is True
