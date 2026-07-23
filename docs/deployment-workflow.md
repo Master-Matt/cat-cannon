@@ -224,6 +224,10 @@ How it works:
   a hard servo limit for 10 seconds, the supervisor also returns to center and
   quarantines that same correction direction until the target clears, centers,
   or moves to the opposite side.
+- **Fresh-frame tracking** — camera capture keeps only the newest frame instead
+  of queueing behind inference. Fixed-camera perception expires after one
+  second, its steering lead lasts at most 0.5 seconds, and an empty turret frame
+  clears the previous tracking filter before the next target is acquired.
 - On a liveness fault the app posts a Discord notice (reuses
   `CAT_CANNON_DISCORD_WEBHOOK_URL`) and exits with sentinel code **70**.
 - The **guardian** (`scripts/run_guardian.sh` → `cat_cannon.app.guardian`) runs

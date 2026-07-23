@@ -11,10 +11,12 @@ import numpy as np
 
 from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
 from cat_cannon.app.idle_motion import IdleCentering, has_fresh_detection
+from cat_cannon.app.perception_cache import PerceptionCache
 from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, EventRecordingConfig, YoloPrompt
 from cat_cannon.domain.models import SupervisorState
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
+FIXED_PERCEPTION_MAX_AGE_SECONDS = 1.0
 
 
 def _require_cv2():
@@ -96,6 +98,18 @@ def _lerp(current: float, target: float, speed: float) -> float:
     if abs(diff) < 0.005:
         return target
     return current + diff * speed
+
+
+def update_eye_gaze_target(
+    state: EyeState,
+    gaze: tuple[float, float] | None,
+) -> None:
+    """Apply only the current detection gaze and clear a lost target."""
+    if gaze is not None:
+        state.target_gaze_x, state.target_gaze_y = gaze
+    elif state.last_detected:
+        state.target_gaze_x = 0.0
+        state.target_gaze_y = 0.0
 
 
 def _draw_eye(cv2, canvas: np.ndarray, state: EyeState, w: int, h: int) -> None:
@@ -563,7 +577,9 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         """Background thread: runs detection + supervisor at GPU speed."""
         nonlocal _latest_step_result, _latest_gaze, _detect_running
         frame_counter = 0
-        last_fixed_perception = None
+        fixed_perception_cache = PerceptionCache(
+            max_age_seconds=FIXED_PERCEPTION_MAX_AGE_SECONDS
+        )
         fixed_detect_interval = max(1, int(config.detect_interval))
 
         while _detect_running:
@@ -602,30 +618,34 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             fixed_detection_updated = False
             if _fixed_cam is not None and frame_counter % fixed_detect_interval == 0:
                 ok_fixed, fixed_frame = _fixed_cam.read()
+                fixed_detection_updated = True
                 if ok_fixed:
-                    last_fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
-                    fixed_detection_updated = True
+                    fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
+                    fixed_perception_cache.update(fixed_perception)
                     if _dataset_recorder is not None and _sys_config is not None:
                         try:
                             _dataset_recorder.maybe_record(
                                 cv2=cv2,
                                 source_id="fixed",
                                 frame=fixed_frame,
-                                detections=last_fixed_perception.detections,
+                                detections=fixed_perception.detections,
                                 policy=_sys_config.detection_policy,
                             )
                         except Exception:
                             pass
+                else:
+                    fixed_perception_cache.clear()
 
-            fixed_detections = last_fixed_perception.detections if last_fixed_perception else []
+            fixed_perception = fixed_perception_cache.current()
+            fixed_detections = fixed_perception.detections if fixed_perception else []
             fixed_width = (
-                last_fixed_perception.width
-                if last_fixed_perception
+                fixed_perception.width
+                if fixed_perception
                 else config.fixed_camera_width
             )
             fixed_height = (
-                last_fixed_perception.height
-                if last_fixed_perception
+                fixed_perception.height
+                if fixed_perception
                 else config.fixed_camera_height
             )
 
@@ -781,8 +801,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 step_result = _latest_step_result
                 gaze = _latest_gaze
 
-            if gaze is not None:
-                state.target_gaze_x, state.target_gaze_y = gaze
+            update_eye_gaze_target(state, gaze)
 
             # --- Determine eye mode from supervisor state ---
             if step_result is not None:

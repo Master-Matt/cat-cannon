@@ -19,6 +19,7 @@ class FakeCv2:
     CAP_PROP_FRAME_WIDTH = 3
     CAP_PROP_FRAME_HEIGHT = 4
     CAP_PROP_FPS = 5
+    CAP_PROP_BUFFERSIZE = 38
 
     def __init__(self, *, gst_opened: bool = True) -> None:
         self.gst_opened = gst_opened
@@ -45,6 +46,12 @@ def test_gstreamer_pipeline_uses_requested_capture_size() -> None:
     assert "framerate=30/1" in pipeline
 
 
+def test_gstreamer_pipeline_keeps_only_the_newest_frame() -> None:
+    pipeline = camera_adapter._gst_pipeline("/dev/video0")
+
+    assert "appsink max-buffers=1 drop=true sync=false" in pipeline
+
+
 def test_open_camera_sets_fallback_capture_size(monkeypatch) -> None:
     monkeypatch.setattr(camera_adapter, "_is_jetson", lambda: False)
     cv2 = FakeCv2()
@@ -56,4 +63,5 @@ def test_open_camera_sets_fallback_capture_size(monkeypatch) -> None:
         (cv2.CAP_PROP_FRAME_WIDTH, 1280),
         (cv2.CAP_PROP_FRAME_HEIGHT, 720),
         (cv2.CAP_PROP_FPS, 30),
+        (cv2.CAP_PROP_BUFFERSIZE, 1),
     ]

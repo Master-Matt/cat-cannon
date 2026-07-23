@@ -470,7 +470,8 @@ class SupervisorLoop:
         }
         fixed_target_recent = (
             self._last_fixed_lead_at is not None
-            and now_s - self._last_fixed_lead_at <= 2.0
+            and now_s - self._last_fixed_lead_at
+            <= self.config.tracking_tuning.fixed_lead_hold_seconds
         )
         should_track = (
             target_visible or self._machine.state in tracking_states
@@ -487,7 +488,10 @@ class SupervisorLoop:
             and self._last_fixed_lead_cat is not None
             and self._last_fixed_lead_at is not None
         ):
-            if now_s - self._last_fixed_lead_at <= 2.0:
+            if (
+                now_s - self._last_fixed_lead_at
+                <= self.config.tracking_tuning.fixed_lead_hold_seconds
+            ):
                 fixed_lead_cat = self._last_fixed_lead_cat
                 fixed_lead_frame_width = self._last_fixed_lead_frame_width
                 fixed_lead_frame_height = self._last_fixed_lead_frame_height
@@ -540,6 +544,8 @@ class SupervisorLoop:
                 self._apply_ema_tracking(correction)
             else:
                 self._reset_corner_recovery()
+                self._filtered_pan = 0.0
+                self._filtered_tilt = 0.0
         elif armed and should_track and assessment.candidate_cat is not None:
             # Fallback: no turret camera, use fixed camera for targeting
             correction = compute_turret_correction(

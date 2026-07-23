@@ -48,10 +48,12 @@ tracking:
   servo_max_tilt_deg: 135
 
 tracking_tuning:
-  ema_alpha: 0.35
-  gain: 0.5
-  pan_clamp_deg: 3.0
-  tilt_clamp_deg: 3.0
+  # Favor the newest bounding box so pan responds quickly; keep the lower tilt
+  # clamp to avoid bringing back the harsh vertical jumps.
+  ema_alpha: 0.6
+  gain: 0.75
+  pan_clamp_deg: 4.0
+  tilt_clamp_deg: 2.5
   deadband_deg: 0.1
   frame_wait_ms: 10
   fire_requires_turret_target: true
@@ -59,6 +61,8 @@ tracking_tuning:
   fire_pan_tolerance_deg: 12
   # Center an unlocked target that keeps pushing into a hard servo limit.
   stuck_limit_seconds: 10
+  # Do not keep steering toward a fixed-camera box after it has gone stale.
+  fixed_lead_hold_seconds: 0.5
 
 event_recording:
   enabled: false

@@ -9,6 +9,7 @@ from cat_cannon.domain.targeting import TrackingCalibration, TurretCorrection
 def _supervisor(
     *,
     servo_limits: ServoLimits | None = None,
+    tracking_tuning: TrackingTuning | None = None,
 ) -> tuple[SupervisorLoop, NullTurretController]:
     controller = NullTurretController()
     config = SystemConfig(
@@ -30,6 +31,7 @@ def _supervisor(
             aim_offset_y_px=0,
         ),
         servo_limits=servo_limits or ServoLimits(),
+        tracking_tuning=tracking_tuning or TrackingTuning(),
     )
     zones = [
         CounterZone(
@@ -291,6 +293,35 @@ def test_supervisor_tracks_turret_only_cat_while_idle() -> None:
     assert controller.tilt_commands
 
 
+def test_supervisor_clears_tracking_filter_when_turret_target_disappears() -> None:
+    supervisor, _controller = _supervisor()
+    turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
+
+    supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[turret_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+    )
+    assert supervisor._filtered_pan != 0.0
+
+    supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+    )
+
+    assert supervisor._filtered_pan == 0.0
+    assert supervisor._filtered_tilt == 0.0
+
+
 def test_supervisor_tracks_current_turret_target_after_fixed_context_expires() -> None:
     supervisor, controller = _supervisor()
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
@@ -380,6 +411,42 @@ def test_supervisor_leads_turret_from_single_fixed_zone_hit_before_confirmation(
     assert result.correction.pan_delta > 0
     assert controller.pan_commands[-1] > 0
     assert controller.tilt_commands[-1] == 0.0
+
+
+def test_supervisor_drops_old_fixed_camera_lead_after_half_a_second() -> None:
+    supervisor, controller = _supervisor(
+        tracking_tuning=TrackingTuning(fixed_lead_hold_seconds=0.5)
+    )
+
+    supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        fixed_detections_fresh=True,
+        now=0.0,
+    )
+    controller.pan_commands.clear()
+    controller.tilt_commands.clear()
+
+    stale = supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        fixed_detections_fresh=False,
+        now=0.501,
+    )
+
+    assert stale.correction is None
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
 
 
 def test_supervisor_logs_zone_activation_and_fire(capsys) -> None:

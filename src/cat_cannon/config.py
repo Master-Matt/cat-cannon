@@ -51,16 +51,17 @@ class VisionConfig:
 
 @dataclass(frozen=True)
 class TrackingTuning:
-    ema_alpha: float = 0.35
-    gain: float = 0.5
-    pan_clamp_deg: float = 3.0
-    tilt_clamp_deg: float = 3.0
+    ema_alpha: float = 0.6
+    gain: float = 0.75
+    pan_clamp_deg: float = 4.0
+    tilt_clamp_deg: float = 2.5
     deadband_deg: float = 0.1
     frame_wait_ms: int = 10
     fire_requires_turret_target: bool = True
     fire_aim_tolerance_px: float = 45.0
     fire_pan_tolerance_deg: float = 12.0
     stuck_limit_seconds: float = 10.0
+    fixed_lead_hold_seconds: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -221,11 +222,11 @@ def load_system_config(path: str | Path) -> SystemConfig:
             servo_center_tilt_deg=float(tracking.get("servo_center_tilt_deg", 0)),
         ),
         tracking_tuning=TrackingTuning(
-            ema_alpha=float(tuning.get("ema_alpha", 0.35)),
-            gain=float(tuning.get("gain", 0.5)),
-            pan_clamp_deg=float(tuning.get("pan_clamp_deg", 3.0)),
+            ema_alpha=float(tuning.get("ema_alpha", 0.6)),
+            gain=float(tuning.get("gain", 0.75)),
+            pan_clamp_deg=float(tuning.get("pan_clamp_deg", 4.0)),
             tilt_clamp_deg=float(
-                tuning.get("tilt_clamp_deg", tuning.get("pan_clamp_deg", 3.0))
+                tuning.get("tilt_clamp_deg", 2.5)
             ),
             deadband_deg=float(tuning.get("deadband_deg", 0.1)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
@@ -240,6 +241,9 @@ def load_system_config(path: str | Path) -> SystemConfig:
             ),
             stuck_limit_seconds=max(
                 0.0, float(tuning.get("stuck_limit_seconds", 10.0))
+            ),
+            fixed_lead_hold_seconds=max(
+                0.0, float(tuning.get("fixed_lead_hold_seconds", 0.5))
             ),
         ),
         human_lockout=_human_lockout_config_from_raw(raw),

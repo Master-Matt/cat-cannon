@@ -26,7 +26,7 @@ def _gst_pipeline(
         "video/x-raw,format=BGRx ! "
         "videoconvert ! "
         "video/x-raw,format=BGR ! "
-        "appsink drop=1"
+        "appsink max-buffers=1 drop=true sync=false"
     )
 
 
@@ -88,6 +88,7 @@ def open_camera(
     _set_capture_property(cv2, camera, "CAP_PROP_FRAME_WIDTH", width)
     _set_capture_property(cv2, camera, "CAP_PROP_FRAME_HEIGHT", height)
     _set_capture_property(cv2, camera, "CAP_PROP_FPS", fps)
+    _set_capture_property(cv2, camera, "CAP_PROP_BUFFERSIZE", 1)
     if rotate_180:
         return _RotatedCapture(camera, cv2)
     return camera

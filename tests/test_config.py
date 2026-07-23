@@ -39,6 +39,16 @@ def test_example_config_uses_small_servo_command_deadband() -> None:
     assert config.tracking_tuning.deadband_deg == 0.1
 
 
+def test_example_config_uses_responsive_pan_and_bounded_tilt_tracking() -> None:
+    config = load_system_config("configs/app.example.yaml")
+
+    assert config.tracking_tuning.ema_alpha == 0.6
+    assert config.tracking_tuning.gain == 0.75
+    assert config.tracking_tuning.pan_clamp_deg == 4.0
+    assert config.tracking_tuning.tilt_clamp_deg == 2.5
+    assert config.tracking_tuning.fixed_lead_hold_seconds == 0.5
+
+
 def test_example_config_requires_turret_target_for_firing() -> None:
     config = load_system_config("configs/app.example.yaml")
 
