@@ -275,7 +275,79 @@ def test_supervisor_tracks_turret_only_cat_while_idle() -> None:
     supervisor, controller = _supervisor()
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
 
-    result = supervisor.process_frame(
+    results = [
+        supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=index * 0.2,
+        )
+        for index in range(5)
+    ]
+
+    assert all(result.correction is None for result in results[:4])
+    assert results[-1].state == SupervisorState.IDLE
+    assert results[-1].target_visible is False
+    assert results[-1].turret_target_visible is True
+    assert results[-1].correction is not None
+    assert controller.pan_commands
+    assert controller.tilt_commands
+
+
+def test_supervisor_expires_partial_turret_acquisition_after_one_second() -> None:
+    supervisor, controller = _supervisor()
+    turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
+
+    results = []
+    for now in (0.0, 0.1, 0.2, 0.3, 1.31):
+        results.append(
+            supervisor.process_frame(
+                [],
+                frame_width=200,
+                frame_height=200,
+                armed=True,
+                turret_detections=[turret_cat],
+                turret_frame_width=200,
+                turret_frame_height=200,
+                now=now,
+            )
+        )
+
+    assert all(result.correction is None for result in results)
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+
+
+def test_supervisor_keeps_acquired_target_through_a_brief_missed_frame() -> None:
+    supervisor, _controller = _supervisor()
+    turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
+
+    for index in range(5):
+        acquired = supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=index * 0.1,
+        )
+    missed = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.5,
+    )
+    resumed = supervisor.process_frame(
         [],
         frame_width=200,
         frame_height=200,
@@ -283,14 +355,112 @@ def test_supervisor_tracks_turret_only_cat_while_idle() -> None:
         turret_detections=[turret_cat],
         turret_frame_width=200,
         turret_frame_height=200,
+        now=0.6,
     )
 
-    assert result.state == SupervisorState.IDLE
-    assert result.target_visible is False
-    assert result.turret_target_visible is True
+    assert acquired.correction is not None
+    assert missed.correction is None
+    assert resumed.correction is not None
+
+
+def test_supervisor_counts_only_confidence_valid_detections_for_acquisition() -> None:
+    supervisor, controller = _supervisor()
+    valid_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
+    low_confidence_cat = Detection(
+        "cat-1",
+        "cat",
+        0.39,
+        BoundingBox(15, 90, 20, 20),
+    )
+
+    results = []
+    for now, detection in (
+        (0.0, valid_cat),
+        (0.1, valid_cat),
+        (0.2, valid_cat),
+        (0.3, low_confidence_cat),
+        (0.4, valid_cat),
+    ):
+        results.append(
+            supervisor.process_frame(
+                [],
+                frame_width=200,
+                frame_height=200,
+                armed=True,
+                turret_detections=[detection],
+                turret_frame_width=200,
+                turret_frame_height=200,
+                now=now,
+            )
+        )
+
+    assert all(result.correction is None for result in results)
+    acquired = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[valid_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.5,
+    )
+
+    assert acquired.correction is not None
+    assert controller.pan_commands
+
+
+def test_supervisor_does_not_combine_target_classes_during_acquisition() -> None:
+    supervisor, controller = _supervisor()
+    turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
+    turret_person = Detection("person-1", "person", 0.95, BoundingBox(20, 20, 20, 20))
+
+    cat_results = [
+        supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            track_people=True,
+            now=index * 0.1,
+        )
+        for index in range(4)
+    ]
+    first_person = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[turret_person],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        track_people=True,
+        now=0.4,
+    )
+
+    assert all(result.correction is None for result in cat_results)
+    assert first_person.correction is None
+    assert controller.pan_commands == []
+
+    result = first_person
+    for index in range(4):
+        result = supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[turret_person],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            track_people=True,
+            now=0.5 + index * 0.1,
+        )
+
     assert result.correction is not None
     assert controller.pan_commands
-    assert controller.tilt_commands
 
 
 def test_supervisor_clears_tracking_filter_when_turret_target_disappears() -> None:
@@ -390,25 +560,30 @@ def test_supervisor_leads_turret_horizontally_from_fixed_zone_when_turret_target
     assert controller.tilt_commands[-1] == 0.0
 
 
-def test_supervisor_leads_turret_from_single_fixed_zone_hit_before_confirmation() -> None:
+def test_supervisor_requires_five_fixed_zone_hits_before_leading_turret() -> None:
     supervisor, controller = _supervisor()
 
-    result = supervisor.process_frame(
-        [_right_side_cat_detection()],
-        frame_width=200,
-        frame_height=200,
-        armed=True,
-        turret_detections=[],
-        turret_frame_width=200,
-        turret_frame_height=200,
-    )
+    results = [
+        supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=index * 0.2,
+        )
+        for index in range(5)
+    ]
 
-    assert result.counter_confirmed is False
-    assert result.target_visible is False
-    assert result.aim_locked is False
-    assert result.fire_commanded is False
-    assert result.correction is not None
-    assert result.correction.pan_delta > 0
+    assert all(result.correction is None for result in results[:4])
+    assert results[-1].counter_confirmed is True
+    assert results[-1].target_visible is True
+    assert results[-1].aim_locked is False
+    assert results[-1].fire_commanded is False
+    assert results[-1].correction is not None
+    assert results[-1].correction.pan_delta > 0
     assert controller.pan_commands[-1] > 0
     assert controller.tilt_commands[-1] == 0.0
 

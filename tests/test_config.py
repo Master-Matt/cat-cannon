@@ -46,6 +46,8 @@ def test_example_config_uses_responsive_pan_and_bounded_tilt_tracking() -> None:
     assert config.tracking_tuning.gain == 0.75
     assert config.tracking_tuning.pan_clamp_deg == 4.0
     assert config.tracking_tuning.tilt_clamp_deg == 2.5
+    assert config.tracking_tuning.acquisition_window_seconds == 1.0
+    assert config.tracking_tuning.acquisition_frame_threshold == 5
     assert config.tracking_tuning.fixed_lead_hold_seconds == 0.5
 
 
