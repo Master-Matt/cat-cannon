@@ -57,6 +57,8 @@ class TrackingTuning:
     tilt_clamp_deg: float = 2.5
     deadband_deg: float = 0.1
     frame_wait_ms: int = 10
+    acquisition_window_seconds: float = 1.0
+    acquisition_frame_threshold: int = 5
     fire_requires_turret_target: bool = True
     fire_aim_tolerance_px: float = 45.0
     fire_pan_tolerance_deg: float = 12.0
@@ -230,6 +232,12 @@ def load_system_config(path: str | Path) -> SystemConfig:
             ),
             deadband_deg=float(tuning.get("deadband_deg", 0.1)),
             frame_wait_ms=int(tuning.get("frame_wait_ms", 10)),
+            acquisition_window_seconds=max(
+                0.0, float(tuning.get("acquisition_window_seconds", 1.0))
+            ),
+            acquisition_frame_threshold=max(
+                1, int(tuning.get("acquisition_frame_threshold", 5))
+            ),
             fire_requires_turret_target=bool(
                 tuning.get("fire_requires_turret_target", True)
             ),

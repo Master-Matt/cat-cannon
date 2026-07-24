@@ -58,6 +58,49 @@ class HumanLockoutHysteresis:
             self._human_detection_times.popleft()
 
 
+class TargetAcquisitionHysteresis:
+    """Require repeated valid observations before tracking a target class."""
+
+    def __init__(self, *, window_seconds: float, frame_threshold: int) -> None:
+        self.window_seconds = max(0.0, float(window_seconds))
+        self.frame_threshold = max(1, int(frame_threshold))
+        self._detection_times: dict[str, deque[float]] = {}
+        self._acquired_keys: set[str] = set()
+
+    def update(self, *, target_key: str | None, now: float) -> bool:
+        now_s = float(now)
+        self._prune(now=now_s)
+        if target_key is None:
+            return False
+
+        detection_times = self._detection_times.setdefault(target_key, deque())
+        detection_times.append(now_s)
+        if len(detection_times) >= self.frame_threshold:
+            self._acquired_keys.add(target_key)
+        return target_key in self._acquired_keys
+
+    def reset(self) -> None:
+        self._detection_times.clear()
+        self._acquired_keys.clear()
+
+    def is_acquired(self, *, target_key: str | None, now: float) -> bool:
+        self._prune(now=float(now))
+        return target_key is not None and target_key in self._acquired_keys
+
+    def _prune(self, *, now: float) -> None:
+        cutoff = now - self.window_seconds
+        expired_keys: list[str] = []
+        for target_key, detection_times in self._detection_times.items():
+            while detection_times and detection_times[0] < cutoff:
+                detection_times.popleft()
+            if not detection_times:
+                expired_keys.append(target_key)
+
+        for target_key in expired_keys:
+            del self._detection_times[target_key]
+            self._acquired_keys.discard(target_key)
+
+
 @dataclass
 class SupervisorLoop:
     config: SystemConfig
@@ -78,6 +121,16 @@ class SupervisorLoop:
             burst_interval_seconds=self.config.fire_burst_interval_seconds,
         )
         self._human_lockout = HumanLockoutHysteresis(self.config.human_lockout)
+        acquisition_window = self.config.tracking_tuning.acquisition_window_seconds
+        acquisition_threshold = self.config.tracking_tuning.acquisition_frame_threshold
+        self._fixed_target_acquisition = TargetAcquisitionHysteresis(
+            window_seconds=acquisition_window,
+            frame_threshold=acquisition_threshold,
+        )
+        self._turret_target_acquisition = TargetAcquisitionHysteresis(
+            window_seconds=acquisition_window,
+            frame_threshold=acquisition_threshold,
+        )
         # EMA-filtered tracking state (same algorithm as eye_screen)
         self._filtered_pan = 0.0
         self._filtered_tilt = 0.0
@@ -406,6 +459,8 @@ class SupervisorLoop:
         now_s = time.monotonic() if now is None else float(now)
         if not armed:
             self._reset_corner_recovery()
+            self._fixed_target_acquisition.reset()
+            self._turret_target_acquisition.reset()
         policy = detection_policy_override or self.config.detection_policy
         # Fixed camera: zone intersection + counter confirmation + human presence
         fixed_frame_zones = scale_counter_zones(
@@ -421,6 +476,19 @@ class SupervisorLoop:
         raw_human_present = fixed_human_present or turret_human_present
         human_present = self._human_lockout.update(
             human_detected=raw_human_present,
+            now=now_s,
+        )
+        self._fixed_target_acquisition.update(
+            target_key=(
+                assessment.candidate_cat.label
+                if (
+                    armed
+                    and fixed_detections_fresh
+                    and assessment.cat_on_counter
+                    and assessment.candidate_cat is not None
+                )
+                else None
+            ),
             now=now_s,
         )
         human_blocks_fire = human_present
@@ -495,23 +563,49 @@ class SupervisorLoop:
                 fixed_lead_cat = self._last_fixed_lead_cat
                 fixed_lead_frame_width = self._last_fixed_lead_frame_width
                 fixed_lead_frame_height = self._last_fixed_lead_frame_height
-        should_lead_from_fixed = fixed_lead_cat is not None and not human_present
+        fixed_target_acquired = self._fixed_target_acquisition.is_acquired(
+            target_key=(
+                fixed_lead_cat.label
+                if fixed_lead_cat is not None
+                else None
+            ),
+            now=now_s,
+        )
+        should_lead_from_fixed = (
+            fixed_lead_cat is not None
+            and fixed_target_acquired
+            and not human_present
+        )
 
         # Turret camera: track the active target class only when armed.
-        turret_target = None
+        turret_target_candidate = None
         turret_camera_available = (
             turret_detections is not None
             and turret_frame_width is not None
             and turret_frame_height is not None
         )
         if armed and turret_camera_available:
-            turret_target = self._find_turret_target(
+            turret_target_candidate = self._find_turret_target(
                 turret_detections,
                 policy,
                 track_people=track_people,
                 frame_width=turret_frame_width,
                 frame_height=turret_frame_height,
             )
+        turret_target_acquired = self._turret_target_acquisition.update(
+            target_key=(
+                turret_target_candidate.label
+                if turret_target_candidate is not None
+                else None
+            ),
+            now=now_s,
+        )
+        turret_target = (
+            turret_target_candidate
+            if turret_target_acquired
+            else None
+        )
+        if armed and turret_camera_available:
             if turret_target is not None:
                 correction = compute_turret_correction(
                     bbox=turret_target.bbox,
@@ -546,7 +640,12 @@ class SupervisorLoop:
                 self._reset_corner_recovery()
                 self._filtered_pan = 0.0
                 self._filtered_tilt = 0.0
-        elif armed and should_track and assessment.candidate_cat is not None:
+        elif (
+            armed
+            and should_track
+            and fixed_target_acquired
+            and assessment.candidate_cat is not None
+        ):
             # Fallback: no turret camera, use fixed camera for targeting
             correction = compute_turret_correction(
                 bbox=assessment.candidate_cat.bbox,

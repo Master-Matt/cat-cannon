@@ -10,6 +10,7 @@ def _supervisor(
     *,
     servo_limits: ServoLimits | None = None,
     tracking_tuning: TrackingTuning | None = None,
+    acquisition_frame_threshold: int = 1,
 ) -> tuple[SupervisorLoop, NullTurretController]:
     controller = NullTurretController()
     config = SystemConfig(
@@ -31,7 +32,10 @@ def _supervisor(
             aim_offset_y_px=0,
         ),
         servo_limits=servo_limits or ServoLimits(),
-        tracking_tuning=tracking_tuning or TrackingTuning(),
+        tracking_tuning=tracking_tuning
+        or TrackingTuning(
+            acquisition_frame_threshold=acquisition_frame_threshold,
+        ),
     )
     zones = [
         CounterZone(
@@ -272,7 +276,7 @@ def test_supervisor_uses_turret_camera_for_targeting_when_available() -> None:
 
 
 def test_supervisor_tracks_turret_only_cat_while_idle() -> None:
-    supervisor, controller = _supervisor()
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
 
     results = [
@@ -299,7 +303,7 @@ def test_supervisor_tracks_turret_only_cat_while_idle() -> None:
 
 
 def test_supervisor_expires_partial_turret_acquisition_after_one_second() -> None:
-    supervisor, controller = _supervisor()
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
 
     results = []
@@ -323,7 +327,7 @@ def test_supervisor_expires_partial_turret_acquisition_after_one_second() -> Non
 
 
 def test_supervisor_keeps_acquired_target_through_a_brief_missed_frame() -> None:
-    supervisor, _controller = _supervisor()
+    supervisor, _controller = _supervisor(acquisition_frame_threshold=5)
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
 
     for index in range(5):
@@ -364,7 +368,7 @@ def test_supervisor_keeps_acquired_target_through_a_brief_missed_frame() -> None
 
 
 def test_supervisor_counts_only_confidence_valid_detections_for_acquisition() -> None:
-    supervisor, controller = _supervisor()
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
     valid_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
     low_confidence_cat = Detection(
         "cat-1",
@@ -411,7 +415,7 @@ def test_supervisor_counts_only_confidence_valid_detections_for_acquisition() ->
 
 
 def test_supervisor_does_not_combine_target_classes_during_acquisition() -> None:
-    supervisor, controller = _supervisor()
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
     turret_person = Detection("person-1", "person", 0.95, BoundingBox(20, 20, 20, 20))
 
@@ -561,7 +565,7 @@ def test_supervisor_leads_turret_horizontally_from_fixed_zone_when_turret_target
 
 
 def test_supervisor_requires_five_fixed_zone_hits_before_leading_turret() -> None:
-    supervisor, controller = _supervisor()
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
 
     results = [
         supervisor.process_frame(
@@ -590,7 +594,10 @@ def test_supervisor_requires_five_fixed_zone_hits_before_leading_turret() -> Non
 
 def test_supervisor_drops_old_fixed_camera_lead_after_half_a_second() -> None:
     supervisor, controller = _supervisor(
-        tracking_tuning=TrackingTuning(fixed_lead_hold_seconds=0.5)
+        tracking_tuning=TrackingTuning(
+            acquisition_frame_threshold=1,
+            fixed_lead_hold_seconds=0.5,
+        )
     )
 
     supervisor.process_frame(
@@ -1107,6 +1114,7 @@ def _corner_supervisor(
         pan_clamp_deg=3.0,
         tilt_clamp_deg=3.0,
         deadband_deg=0.1,
+        acquisition_frame_threshold=1,
         stuck_limit_seconds=stuck_limit_seconds,
     )
     config = SystemConfig(

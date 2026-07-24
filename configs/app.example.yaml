@@ -56,6 +56,10 @@ tracking_tuning:
   tilt_clamp_deg: 2.5
   deadband_deg: 0.1
   frame_wait_ms: 10
+  # Ignore one-off boxes: require five confidence-valid observations of the
+  # same target class within one second before the servos begin tracking.
+  acquisition_window_seconds: 1.0
+  acquisition_frame_threshold: 5
   fire_requires_turret_target: true
   fire_aim_tolerance_px: 45
   fire_pan_tolerance_deg: 12
