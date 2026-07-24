@@ -571,12 +571,6 @@ class SupervisorLoop:
             ),
             now=now_s,
         )
-        should_lead_from_fixed = (
-            fixed_lead_cat is not None
-            and fixed_target_acquired
-            and not human_present
-        )
-
         # Turret camera: track the active target class only when armed.
         turret_target_candidate = None
         turret_camera_available = (
@@ -584,7 +578,12 @@ class SupervisorLoop:
             and turret_frame_width is not None
             and turret_frame_height is not None
         )
-        if armed and turret_camera_available:
+        if (
+            armed
+            and turret_detections is not None
+            and turret_frame_width is not None
+            and turret_frame_height is not None
+        ):
             turret_target_candidate = self._find_turret_target(
                 turret_detections,
                 policy,
@@ -605,7 +604,12 @@ class SupervisorLoop:
             if turret_target_acquired
             else None
         )
-        if armed and turret_camera_available:
+        if (
+            armed
+            and turret_detections is not None
+            and turret_frame_width is not None
+            and turret_frame_height is not None
+        ):
             if turret_target is not None:
                 correction = compute_turret_correction(
                     bbox=turret_target.bbox,
@@ -628,7 +632,11 @@ class SupervisorLoop:
                     )
                 if not self._recover_stuck_corner(correction, now=now_s):
                     self._apply_ema_tracking(correction)
-            elif should_lead_from_fixed:
+            elif (
+                fixed_lead_cat is not None
+                and fixed_target_acquired
+                and not human_present
+            ):
                 self._reset_corner_recovery()
                 correction = self._fixed_camera_horizontal_lead(
                     cat=fixed_lead_cat,

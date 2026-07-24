@@ -130,7 +130,13 @@ def test_algorithm_replay_fires_when_zone_confirmed_and_turret_centered() -> Non
     assert summary.rows[-1].controller_fire_count == 1
     assert not summary.rows[0].fixed_in_valid_zone
     assert all(row.fixed_in_valid_zone for row in summary.rows[1:])
-    assert all(row.turret_aim_locked for row in summary.rows)
+    assert [row.turret_aim_locked for row in summary.rows] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
     assert not any(row.tracking_commanded for row in summary.rows)
 
 

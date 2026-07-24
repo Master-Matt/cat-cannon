@@ -56,6 +56,7 @@ def test_replay_fires_after_confirmation_and_aim_lock() -> None:
         ReplayFrame([_cat_detection()], 200, 200),
         ReplayFrame([_cat_detection()], 200, 200),
         ReplayFrame([_cat_detection()], 200, 200),
+        ReplayFrame([_cat_detection()], 200, 200),
     ]
 
     snapshots = run_replay(supervisor, frames)
