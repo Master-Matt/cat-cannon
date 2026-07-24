@@ -160,6 +160,40 @@ def test_detection_resets_idle_timer_before_centering() -> None:
     assert controller.angles == [(8.0, 91.0)]
 
 
+def test_tracking_idle_timer_resets_only_for_an_active_correction() -> None:
+    controller = FakeAbsoluteController()
+    centering = IdleCentering()
+    calibration = _calibration(pan_deg=9.0, tilt_deg=84.15)
+    limits = ServoLimits()
+
+    assert centering.update_for_tracking(
+        controller=controller,
+        armed=True,
+        correction=object(),
+        calibration=calibration,
+        limits=limits,
+        now=0.0,
+    ) is False
+    assert centering.update_for_tracking(
+        controller=controller,
+        armed=True,
+        correction=None,
+        calibration=calibration,
+        limits=limits,
+        now=1.0,
+    ) is False
+    assert centering.update_for_tracking(
+        controller=controller,
+        armed=True,
+        correction=None,
+        calibration=calibration,
+        limits=limits,
+        now=11.0,
+    ) is True
+
+    assert controller.angles == [(9.0, 84.15)]
+
+
 def test_idle_centering_uses_axis_midpoint_for_out_of_range_center() -> None:
     controller = FakeAbsoluteController()
     centering = IdleCentering()
