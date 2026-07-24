@@ -5,6 +5,7 @@ import yaml
 from cat_cannon.adapters.controller import NullTurretController
 from cat_cannon.adapters.interfaces import PerceptionFrame
 from cat_cannon.adapters.rp2040_protocol import ControllerResponse
+from cat_cannon.app.idle_motion import IdleCentering
 from cat_cannon.app.supervisor import SupervisorStepResult
 from cat_cannon.app.tracking_test import (
     TraceLog,
@@ -20,14 +21,17 @@ from cat_cannon.app.tracking_test import (
     _left_label_rect,
     _next_limit_target,
     _status_lines,
+    _update_idle_centering,
     build_tracking_layout,
     detect_tracking_cameras,
     handle_tracking_control,
     parse_args,
     resolve_zones_path,
 )
+from cat_cannon.config import ServoLimits
 from cat_cannon.domain.models import BoundingBox, Detection, SupervisorState
 from cat_cannon.domain.safety import DetectionPolicy
+from cat_cannon.domain.targeting import TrackingCalibration, TurretCorrection
 
 
 class FakeSession:
@@ -697,6 +701,88 @@ def test_tracking_detection_runs_yolo_for_fixed_and_tracking_cameras() -> None:
     assert result.turret.source_id == "turret"
     assert result.fixed_summary == "fixed cats=1 people=0"
     assert result.turret_summary == "turret cats=1 people=0"
+
+
+def test_tracking_ui_centers_after_ten_seconds_without_active_target() -> None:
+    controller = NullTurretController()
+    idle_centering = IdleCentering()
+    calibration = TrackingCalibration(
+        horizontal_deadband_px=0.0,
+        vertical_deadband_px=0.0,
+        horizontal_gain=0.0,
+        vertical_gain=0.0,
+        aim_offset_x_px=0.0,
+        aim_offset_y_px=0.0,
+        servo_center_pan_deg=9.0,
+        servo_center_tilt_deg=84.15,
+    )
+    idle_result = SupervisorStepResult(
+        state=SupervisorState.IDLE,
+        fire_commanded=False,
+        human_present=False,
+        counter_confirmed=False,
+        target_visible=False,
+        aim_locked=False,
+        active_zone_id=None,
+        candidate_track_id=None,
+        correction=None,
+    )
+    tracking_result = SupervisorStepResult(
+        state=SupervisorState.TRACKING,
+        fire_commanded=False,
+        human_present=False,
+        counter_confirmed=False,
+        target_visible=False,
+        aim_locked=False,
+        active_zone_id=None,
+        candidate_track_id=None,
+        correction=TurretCorrection(
+            pan_delta=2.0,
+            tilt_delta=0.0,
+            aim_locked=False,
+        ),
+    )
+
+    assert _update_idle_centering(
+        idle_centering=idle_centering,
+        controller=controller,
+        armed=True,
+        step_result=idle_result,
+        calibration=calibration,
+        limits=ServoLimits(),
+        now=0.0,
+    ) is False
+    assert _update_idle_centering(
+        idle_centering=idle_centering,
+        controller=controller,
+        armed=True,
+        step_result=tracking_result,
+        calibration=calibration,
+        limits=ServoLimits(),
+        now=9.0,
+    ) is False
+    assert _update_idle_centering(
+        idle_centering=idle_centering,
+        controller=controller,
+        armed=True,
+        step_result=idle_result,
+        calibration=calibration,
+        limits=ServoLimits(),
+        now=10.0,
+    ) is False
+    assert _update_idle_centering(
+        idle_centering=idle_centering,
+        controller=controller,
+        armed=True,
+        step_result=idle_result,
+        calibration=calibration,
+        limits=ServoLimits(),
+        now=20.0,
+    ) is True
+
+    assert controller.pan_commands == [0.0]
+    assert controller.tilt_commands == [0.0]
+    assert controller.angle_commands == [(9.0, 84.15)]
 
 
 def test_trace_log_keeps_recent_control_events() -> None:
