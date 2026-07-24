@@ -17,11 +17,13 @@ from cat_cannon.adapters.ultralytics_yolo import (
 )
 from cat_cannon.app.controller_session import ControllerSession
 from cat_cannon.app.event_video import build_event_video_recorder
+from cat_cannon.app.idle_motion import IdleCentering
 from cat_cannon.app.supervisor import SupervisorLoop, SupervisorStepResult
 from cat_cannon.app.yolo_dataset import CatDatasetRecorder
 from cat_cannon.config import (
     DEFAULT_YOLOE_PROMPTS,
     EventRecordingConfig,
+    ServoLimits,
     YoloPrompt,
     load_counter_zones,
     load_event_recording_config,
@@ -31,6 +33,7 @@ from cat_cannon.config import (
 )
 from cat_cannon.domain.models import CounterZone, Detection
 from cat_cannon.domain.safety import DetectionPolicy
+from cat_cannon.domain.targeting import TrackingCalibration
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 LimitTarget = Literal["top", "bottom", "left", "right"]
@@ -168,6 +171,27 @@ class UiButton:
 
     def contains(self, x: int, y: int) -> bool:
         return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
+
+
+def _update_idle_centering(
+    *,
+    idle_centering: IdleCentering,
+    controller: TurretController,
+    armed: bool,
+    step_result: SupervisorStepResult,
+    calibration: TrackingCalibration,
+    limits: ServoLimits,
+    now: float | None = None,
+) -> bool:
+    """Center after the supervisor has had no target to track for ten seconds."""
+    return idle_centering.update_for_tracking(
+        controller=controller,
+        armed=armed,
+        correction=step_result.correction,
+        calibration=calibration,
+        limits=limits,
+        now=now,
+    )
 
 
 def _require_cv2():
@@ -1340,6 +1364,7 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
         session = ControllerSession(controller=controller, servo_limits=system_config.servo_limits)
 
     supervisor = SupervisorLoop(config=system_config, zones=zones, controller=controller)
+    idle_centering = IdleCentering()
     fixed_camera = _open_camera(
         cv2,
         config.fixed_camera,
@@ -1547,6 +1572,14 @@ def run_tracking_test_screen(config: TrackingTestConfig) -> ScreenName | None:
                 ),
                 fixed_detections_fresh=fixed_detection_updated,
                 detection_policy_override=active_policy if state.track_humans else None,
+            )
+            _update_idle_centering(
+                idle_centering=idle_centering,
+                controller=controller,
+                armed=state.armed,
+                step_result=step_result,
+                calibration=system_config.tracking_calibration,
+                limits=system_config.servo_limits,
             )
             if event_recorder is not None and turret_frame is not None:
                 try:

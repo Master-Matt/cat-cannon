@@ -68,6 +68,26 @@ class IdleCentering:
     _quiet_started_at: float | None = field(default=None, init=False)
     _failure_logged: bool = field(default=False, init=False)
 
+    def update_for_tracking(
+        self,
+        *,
+        controller: AbsoluteTurretController,
+        armed: bool,
+        correction: object | None,
+        calibration: TrackingCalibration,
+        limits: ServoLimits,
+        now: float | None = None,
+    ) -> bool:
+        """Use only an actionable supervisor correction to hold off centering."""
+        return self.update(
+            controller=controller,
+            armed=armed,
+            detection_present=correction is not None,
+            calibration=calibration,
+            limits=limits,
+            now=now,
+        )
+
     def update(
         self,
         *,
