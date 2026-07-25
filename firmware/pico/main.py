@@ -21,7 +21,11 @@ class Servo:
 
     def write(self, angle_deg, force=False):
         clamped = min(self._max_deg, max(self._min_deg, angle_deg))
-        if not force and abs(clamped - self.angle_deg) <= cfg.SERVO_EPS_DEG:
+        if (
+            not force
+            and self._attached
+            and abs(clamped - self.angle_deg) <= cfg.SERVO_EPS_DEG
+        ):
             return False
         self.angle_deg = clamped
         duty = self._angle_to_duty_u16(clamped)

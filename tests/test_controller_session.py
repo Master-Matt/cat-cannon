@@ -1,3 +1,5 @@
+import threading
+
 from cat_cannon.app.controller_session import ControllerSession
 from cat_cannon.config import ServoLimits
 
@@ -11,15 +13,20 @@ class FakeController:
         self.enabled = []
         self.servo_limits = []
         self.motion_directions = []
+        self.heartbeat_payload = {"enabled": True}
+        self.enabled_again = threading.Event()
 
     def handshake(self):
         self.handshakes += 1
 
     def heartbeat(self):
         self.heartbeats += 1
+        return type("Response", (), {"payload": dict(self.heartbeat_payload)})()
 
     def set_enabled(self, enabled: bool):
         self.enabled.append(enabled)
+        if self.enabled.count(True) >= 2:
+            self.enabled_again.set()
 
     def set_servo_limits(self, **limits):
         self.servo_limits.append(limits)
@@ -45,7 +52,8 @@ def test_controller_session_manages_handshake_enable_disable_and_stop() -> None:
 
     assert controller.handshakes == 1
     assert controller.heartbeats >= 1
-    assert controller.enabled == [True, False]
+    assert controller.enabled[:2] == [True, False]
+    assert controller.enabled[-1] is False
     assert controller.safe_stops == 1
     assert controller.closed == 1
 
@@ -103,3 +111,17 @@ def test_controller_session_applies_camera_pov_motion_directions() -> None:
             "tilt_delta_sign": -1,
         }
     ]
+
+
+def test_controller_session_restores_armed_state_after_watchdog_disable() -> None:
+    controller = FakeController()
+    controller.heartbeat_payload = {"enabled": False}
+    session = ControllerSession(controller=controller, heartbeat_interval_s=0.01)
+
+    session.start()
+    session.enable()
+    recovered = controller.enabled_again.wait(timeout=0.5)
+    session.stop()
+
+    assert recovered is True
+    assert controller.enabled[:2] == [True, True]

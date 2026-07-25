@@ -109,3 +109,18 @@ def test_pan_servo_accepts_negative_angle_commands(monkeypatch) -> None:
     assert controller.pan.min_deg == -180.0
     assert controller.pan.angle_deg == -3.0
     assert response["payload"]["pan_deg"] == -3.0
+
+
+def test_detached_servo_reattaches_when_same_angle_is_commanded(monkeypatch) -> None:
+    pico_main = _load_pico_main(monkeypatch)
+    servo = pico_main.Servo(pin_id=0, min_deg=0.0, max_deg=180.0, home_deg=90.0)
+    expected_duty = servo._angle_to_duty_u16(90.0)
+
+    servo.detach()
+    writes_after_detach = len(servo._pwm.duties)
+    moved = servo.write(90.0)
+
+    assert moved is True
+    assert servo.attached is True
+    assert len(servo._pwm.duties) == writes_after_detach + 1
+    assert servo._pwm.duties[-1] == expected_duty
