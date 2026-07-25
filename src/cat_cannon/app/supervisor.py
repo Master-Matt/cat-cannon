@@ -236,21 +236,34 @@ class SupervisorLoop:
         cat: Detection | None,
         frame_width: int,
     ) -> bool:
-        if cat is None or frame_width <= 0:
-            return True
-        limits = self.config.servo_limits
-        if limits.pan_left_deg is None or limits.pan_right_deg is None:
+        expected_pan = self._fixed_camera_expected_pan(
+            cat=cat,
+            frame_width=frame_width,
+        )
+        if expected_pan is None:
             return True
         current_pan = self._last_reported_pan_deg()
         if current_pan is None:
             return True
-        target_ratio = max(0.0, min(1.0, cat.bbox.center.x / frame_width))
-        expected_pan = limits.pan_left_deg + (
-            (limits.pan_right_deg - limits.pan_left_deg) * target_ratio
-        )
         return (
             abs(current_pan - expected_pan)
             <= self.config.tracking_tuning.fire_pan_tolerance_deg
+        )
+
+    def _fixed_camera_expected_pan(
+        self,
+        *,
+        cat: Detection | None,
+        frame_width: int,
+    ) -> float | None:
+        if cat is None or frame_width <= 0:
+            return None
+        limits = self.config.servo_limits
+        if limits.pan_left_deg is None or limits.pan_right_deg is None:
+            return None
+        target_ratio = max(0.0, min(1.0, cat.bbox.center.x / frame_width))
+        return limits.pan_left_deg + (
+            (limits.pan_right_deg - limits.pan_left_deg) * target_ratio
         )
 
     def _last_reported_pan_deg(self) -> float | None:
@@ -431,6 +444,31 @@ class SupervisorLoop:
         frame_width: int,
         frame_height: int,
     ) -> TurretCorrection:
+        expected_pan = self._fixed_camera_expected_pan(
+            cat=cat,
+            frame_width=frame_width,
+        )
+        current_pan = self._last_reported_pan_deg()
+        if expected_pan is not None and current_pan is not None:
+            pan_sign = getattr(
+                self.controller,
+                "pan_delta_sign",
+                self.config.servo_limits.pan_delta_sign,
+            )
+            camera_pan_delta = (expected_pan - current_pan) * (
+                1 if pan_sign >= 0 else -1
+            )
+            if (
+                abs(camera_pan_delta)
+                <= self.config.tracking_tuning.deadband_deg
+            ):
+                camera_pan_delta = 0.0
+            return TurretCorrection(
+                pan_delta=camera_pan_delta,
+                tilt_delta=0.0,
+                aim_locked=False,
+            )
+
         correction = compute_turret_correction(
             bbox=cat.bbox,
             frame=FrameSize(width=frame_width, height=frame_height),
@@ -643,6 +681,11 @@ class SupervisorLoop:
                     frame_width=fixed_lead_frame_width,
                     frame_height=fixed_lead_frame_height,
                 )
+                if (
+                    self._direction(correction.pan_delta)
+                    != self._direction(self._filtered_pan)
+                ):
+                    self._filtered_pan = 0.0
                 self._apply_ema_tracking(correction)
             else:
                 self._reset_corner_recovery()
@@ -758,6 +801,12 @@ class SupervisorLoop:
         fixed_zone_fresh: bool,
     ) -> None:
         active_zone_id = assessment_active_zone_id if counter_confirmed else None
+        correction_text = "-"
+        if correction is not None:
+            correction_text = (
+                f"pan={correction.pan_delta:.2f},"
+                f"tilt={correction.tilt_delta:.2f}"
+            )
         if active_zone_id != self._logged_active_zone_id:
             if active_zone_id is None and self._logged_active_zone_id is not None:
                 print(
@@ -778,17 +827,13 @@ class SupervisorLoop:
                     f"turret_aligned={turret_fire_aligned} "
                     f"turret_direction={turret_direction_aligned} "
                     f"fire_permitted={fire_permitted} "
-                    f"fixed_fresh={fixed_zone_fresh}",
+                    f"fixed_fresh={fixed_zone_fresh} "
+                    f"correction={correction_text}",
                     flush=True,
                 )
             self._logged_active_zone_id = active_zone_id
 
         if result.fire_commanded:
-            correction_text = "-"
-            if correction is not None:
-                correction_text = (
-                    f"pan={correction.pan_delta:.2f},tilt={correction.tilt_delta:.2f}"
-                )
             print(
                 "[supervisor] "
                 f"ts={_utc_log_timestamp()} fire_commanded "

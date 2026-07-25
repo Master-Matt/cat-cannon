@@ -564,6 +564,70 @@ def test_supervisor_leads_turret_horizontally_from_fixed_zone_when_turret_target
     assert controller.tilt_commands[-1] == 0.0
 
 
+class _ReportedPanController(NullTurretController):
+    pan_delta_sign = -1
+
+    def __init__(self, pan_deg: float) -> None:
+        super().__init__()
+        self.pan_deg = pan_deg
+
+    @property
+    def last_status_payload(self) -> dict:
+        return {
+            "pan_deg": self.pan_deg,
+            "pan_at_min": False,
+            "pan_at_max": False,
+            "tilt_at_min": False,
+            "tilt_at_max": False,
+        }
+
+
+def test_fixed_camera_lead_stops_at_calibrated_absolute_pan_target() -> None:
+    limits = ServoLimits(
+        pan_min_deg=-99.0,
+        pan_max_deg=117.0,
+        pan_left_deg=117.0,
+        pan_right_deg=-99.0,
+    )
+    supervisor, _ = _supervisor(servo_limits=limits)
+    controller = _ReportedPanController(pan_deg=9.0)
+    supervisor.controller = controller
+
+    approaching = supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.0,
+    )
+
+    assert approaching.correction is not None
+    assert approaching.correction.pan_delta > 0.0
+    assert controller.pan_commands
+
+    controller.pan_deg = -45.0
+    controller.pan_commands.clear()
+    controller.tilt_commands.clear()
+    arrived = supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.1,
+    )
+
+    assert arrived.correction is not None
+    assert arrived.correction.pan_delta == 0.0
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+
+
 def test_supervisor_requires_five_fixed_zone_hits_before_leading_turret() -> None:
     supervisor, controller = _supervisor(acquisition_frame_threshold=5)
 

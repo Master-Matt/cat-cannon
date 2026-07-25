@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -13,7 +14,8 @@ from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
 from cat_cannon.app.idle_motion import IdleCentering
 from cat_cannon.app.perception_cache import PerceptionCache
 from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, EventRecordingConfig, YoloPrompt
-from cat_cannon.domain.models import SupervisorState
+from cat_cannon.domain.models import Detection, SupervisorState
+from cat_cannon.domain.safety import DetectionPolicy
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 FIXED_PERCEPTION_MAX_AGE_SECONDS = 1.0
@@ -80,6 +82,44 @@ class EyeState:
     next_look_time: float = field(default_factory=lambda: time.time() + random.uniform(3.0, 8.0))
     # Blink
     blink_until: float = 0.0
+
+
+@dataclass
+class FixedDetectionCadence:
+    """Temporarily sample the fixed camera every loop after a valid target."""
+
+    normal_interval_frames: int
+    burst_seconds: float
+    _burst_until: float | None = field(default=None, init=False)
+
+    def should_detect(self, *, frame_counter: int, now: float) -> bool:
+        interval = max(1, int(self.normal_interval_frames))
+        burst_active = (
+            self._burst_until is not None
+            and float(now) <= self._burst_until
+        )
+        return burst_active or frame_counter % interval == 0
+
+    def observe(
+        self,
+        *,
+        detections: Collection[Detection],
+        policy: DetectionPolicy,
+        now: float,
+    ) -> None:
+        has_valid_target = any(
+            (
+                detection.label == policy.cat_class
+                and detection.confidence >= policy.cat_confidence_threshold
+            )
+            or (
+                detection.label == policy.person_class
+                and detection.confidence >= policy.person_confidence_threshold
+            )
+            for detection in detections
+        )
+        if has_valid_target:
+            self._burst_until = float(now) + max(0.0, self.burst_seconds)
 
 
 def build_eye_dataset_recorder(config: EyeConfig):
@@ -581,6 +621,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             max_age_seconds=FIXED_PERCEPTION_MAX_AGE_SECONDS
         )
         fixed_detect_interval = max(1, int(config.detect_interval))
+        fixed_detection_cadence: FixedDetectionCadence | None = None
 
         while _detect_running:
             if not _bg_done.is_set():
@@ -597,6 +638,13 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             if _detector is None or _supervisor is None:
                 time.sleep(0.05)
                 continue
+            if fixed_detection_cadence is None and _sys_config is not None:
+                fixed_detection_cadence = FixedDetectionCadence(
+                    normal_interval_frames=fixed_detect_interval,
+                    burst_seconds=(
+                        _sys_config.tracking_tuning.acquisition_window_seconds
+                    ),
+                )
 
             # --- Heartbeat: lazy init + liveness beat ---
             _hb_cfg = _bg_resources.get("heartbeat_config")
@@ -616,12 +664,30 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
 
             # Fixed camera: detect at interval for zone confirmation
             fixed_detection_updated = False
-            if _fixed_cam is not None and frame_counter % fixed_detect_interval == 0:
+            fixed_detection_now = time.monotonic()
+            fixed_detection_due = (
+                fixed_detection_cadence.should_detect(
+                    frame_counter=frame_counter,
+                    now=fixed_detection_now,
+                )
+                if fixed_detection_cadence is not None
+                else frame_counter % fixed_detect_interval == 0
+            )
+            if _fixed_cam is not None and fixed_detection_due:
                 ok_fixed, fixed_frame = _fixed_cam.read()
                 fixed_detection_updated = True
                 if ok_fixed:
                     fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
                     fixed_perception_cache.update(fixed_perception)
+                    if (
+                        fixed_detection_cadence is not None
+                        and _sys_config is not None
+                    ):
+                        fixed_detection_cadence.observe(
+                            detections=fixed_perception.detections,
+                            policy=_sys_config.detection_policy,
+                            now=time.monotonic(),
+                        )
                     if _dataset_recorder is not None and _sys_config is not None:
                         try:
                             _dataset_recorder.maybe_record(
