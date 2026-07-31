@@ -221,8 +221,17 @@ class SupervisorLoop:
         frame_width: int | None = None,
         frame_height: int | None = None,
     ) -> Detection | None:
+        trackable_detections = [
+            detection
+            for detection in turret_detections
+            if self._is_trackable_turret_detection(
+                detection,
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+        ]
         cat = self._find_turret_cat(
-            turret_detections,
+            trackable_detections,
             policy,
             frame_width=frame_width,
             frame_height=frame_height,
@@ -230,8 +239,32 @@ class SupervisorLoop:
         if cat is not None:
             return cat
         if track_people:
-            return self._find_turret_person(turret_detections, policy)
+            return self._find_turret_person(trackable_detections, policy)
         return None
+
+    def _is_trackable_turret_detection(
+        self,
+        detection: Detection,
+        *,
+        frame_width: int | None,
+        frame_height: int | None,
+    ) -> bool:
+        if (
+            frame_width is None
+            or frame_height is None
+            or frame_width <= 0
+            or frame_height <= 0
+        ):
+            return False
+        bbox_area = max(0.0, detection.bbox.width) * max(
+            0.0,
+            detection.bbox.height,
+        )
+        frame_area = float(frame_width * frame_height)
+        return (
+            bbox_area / frame_area
+            >= self.config.tracking_tuning.min_turret_target_area_ratio
+        )
 
     @staticmethod
     def _normalized_detection_center(

@@ -328,6 +328,62 @@ def test_supervisor_does_not_combine_spatially_distant_cat_boxes() -> None:
     assert controller.tilt_commands == []
 
 
+def test_supervisor_does_not_track_tiny_coherent_cat_box() -> None:
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
+    tiny_false_cat = Detection(
+        "false-cat",
+        "cat",
+        0.92,
+        BoundingBox(120, 100, 4, 12),
+    )
+
+    results = [
+        supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[tiny_false_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=index * 0.1,
+        )
+        for index in range(5)
+    ]
+
+    assert all(result.correction is None for result in results)
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+
+
+def test_tiny_person_still_engages_human_safety_lockout() -> None:
+    supervisor, controller = _supervisor(acquisition_frame_threshold=1)
+    tiny_person = Detection(
+        "tiny-person",
+        "person",
+        0.95,
+        BoundingBox(120, 100, 4, 12),
+    )
+
+    for index in range(5):
+        result = supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[tiny_person],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            track_people=True,
+            now=index * 0.1,
+        )
+
+    assert result.human_present is True
+    assert result.correction is None
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+
+
 def test_supervisor_drops_acquired_cat_after_spatial_jump() -> None:
     supervisor, controller = _supervisor(acquisition_frame_threshold=5)
     left_cat = Detection("cat-left", "cat", 0.92, BoundingBox(5, 90, 20, 20))

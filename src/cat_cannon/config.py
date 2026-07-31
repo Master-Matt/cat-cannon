@@ -59,6 +59,7 @@ class TrackingTuning:
     frame_wait_ms: int = 10
     acquisition_window_seconds: float = 1.0
     acquisition_frame_threshold: int = 5
+    min_turret_target_area_ratio: float = 0.005
     fire_requires_turret_target: bool = True
     fire_aim_tolerance_px: float = 45.0
     fire_pan_tolerance_deg: float = 12.0
@@ -237,6 +238,13 @@ def load_system_config(path: str | Path) -> SystemConfig:
             ),
             acquisition_frame_threshold=max(
                 1, int(tuning.get("acquisition_frame_threshold", 5))
+            ),
+            min_turret_target_area_ratio=min(
+                1.0,
+                max(
+                    0.0,
+                    float(tuning.get("min_turret_target_area_ratio", 0.005)),
+                ),
             ),
             fire_requires_turret_target=bool(
                 tuning.get("fire_requires_turret_target", True)

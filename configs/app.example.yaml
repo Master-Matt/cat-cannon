@@ -60,6 +60,8 @@ tracking_tuning:
   # same target class within one second before the servos begin tracking.
   acquisition_window_seconds: 1.0
   acquisition_frame_threshold: 5
+  # Reject tiny false positives before they can physically steer the turret.
+  min_turret_target_area_ratio: 0.005
   fire_requires_turret_target: true
   fire_aim_tolerance_px: 45
   fire_pan_tolerance_deg: 12
