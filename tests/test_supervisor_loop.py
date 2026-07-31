@@ -302,6 +302,68 @@ def test_supervisor_tracks_turret_only_cat_while_idle() -> None:
     assert controller.tilt_commands
 
 
+def test_supervisor_does_not_combine_spatially_distant_cat_boxes() -> None:
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
+    left_cat = Detection("cat-left", "cat", 0.92, BoundingBox(5, 90, 20, 20))
+    right_cat = Detection("cat-right", "cat", 0.92, BoundingBox(175, 90, 20, 20))
+
+    results = [
+        supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[detection],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=index * 0.1,
+        )
+        for index, detection in enumerate(
+            (left_cat, right_cat, left_cat, right_cat, left_cat)
+        )
+    ]
+
+    assert all(result.correction is None for result in results)
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+
+
+def test_supervisor_drops_acquired_cat_after_spatial_jump() -> None:
+    supervisor, controller = _supervisor(acquisition_frame_threshold=5)
+    left_cat = Detection("cat-left", "cat", 0.92, BoundingBox(5, 90, 20, 20))
+    right_cat = Detection("cat-right", "cat", 0.92, BoundingBox(175, 90, 20, 20))
+
+    for index in range(5):
+        acquired = supervisor.process_frame(
+            [],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[left_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=index * 0.1,
+        )
+    assert acquired.correction is not None
+
+    controller.pan_commands.clear()
+    controller.tilt_commands.clear()
+    jumped = supervisor.process_frame(
+        [],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[right_cat],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.5,
+    )
+
+    assert jumped.correction is None
+    assert controller.pan_commands == []
+    assert controller.tilt_commands == []
+
+
 def test_supervisor_expires_partial_turret_acquisition_after_one_second() -> None:
     supervisor, controller = _supervisor(acquisition_frame_threshold=5)
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))

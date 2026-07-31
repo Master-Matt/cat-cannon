@@ -13,6 +13,8 @@ from cat_cannon.domain.safety import CounterConfirmation, DetectionPolicy, asses
 from cat_cannon.domain.state_machine import SupervisorInputs, SupervisorStateMachine
 from cat_cannon.domain.targeting import FrameSize, TurretCorrection, compute_turret_correction
 
+ACQUISITION_MAX_CENTER_JUMP_RATIO = 0.15
+
 
 @dataclass(frozen=True)
 class SupervisorStepResult:
@@ -59,28 +61,47 @@ class HumanLockoutHysteresis:
 
 
 class TargetAcquisitionHysteresis:
-    """Require repeated valid observations before tracking a target class."""
+    """Require repeated, spatially coherent observations before tracking."""
 
     def __init__(self, *, window_seconds: float, frame_threshold: int) -> None:
         self.window_seconds = max(0.0, float(window_seconds))
         self.frame_threshold = max(1, int(frame_threshold))
-        self._detection_times: dict[str, deque[float]] = {}
+        self._observations: dict[
+            str,
+            deque[tuple[float, tuple[float, float]]],
+        ] = {}
         self._acquired_keys: set[str] = set()
 
-    def update(self, *, target_key: str | None, now: float) -> bool:
+    def update(
+        self,
+        *,
+        target_key: str | None,
+        target_center: tuple[float, float] | None,
+        now: float,
+    ) -> bool:
         now_s = float(now)
         self._prune(now=now_s)
-        if target_key is None:
+        if target_key is None or target_center is None:
             return False
 
-        detection_times = self._detection_times.setdefault(target_key, deque())
-        detection_times.append(now_s)
-        if len(detection_times) >= self.frame_threshold:
+        observations = self._observations.setdefault(target_key, deque())
+        if observations:
+            previous_center = observations[-1][1]
+            center_jump = (
+                (target_center[0] - previous_center[0]) ** 2
+                + (target_center[1] - previous_center[1]) ** 2
+            ) ** 0.5
+            if center_jump > ACQUISITION_MAX_CENTER_JUMP_RATIO:
+                observations.clear()
+                self._acquired_keys.discard(target_key)
+
+        observations.append((now_s, target_center))
+        if len(observations) >= self.frame_threshold:
             self._acquired_keys.add(target_key)
         return target_key in self._acquired_keys
 
     def reset(self) -> None:
-        self._detection_times.clear()
+        self._observations.clear()
         self._acquired_keys.clear()
 
     def is_acquired(self, *, target_key: str | None, now: float) -> bool:
@@ -90,14 +111,14 @@ class TargetAcquisitionHysteresis:
     def _prune(self, *, now: float) -> None:
         cutoff = now - self.window_seconds
         expired_keys: list[str] = []
-        for target_key, detection_times in self._detection_times.items():
-            while detection_times and detection_times[0] < cutoff:
-                detection_times.popleft()
-            if not detection_times:
+        for target_key, observations in self._observations.items():
+            while observations and observations[0][0] < cutoff:
+                observations.popleft()
+            if not observations:
                 expired_keys.append(target_key)
 
         for target_key in expired_keys:
-            del self._detection_times[target_key]
+            del self._observations[target_key]
             self._acquired_keys.discard(target_key)
 
 
@@ -211,6 +232,27 @@ class SupervisorLoop:
         if track_people:
             return self._find_turret_person(turret_detections, policy)
         return None
+
+    @staticmethod
+    def _normalized_detection_center(
+        detection: Detection | None,
+        *,
+        frame_width: int | None,
+        frame_height: int | None,
+    ) -> tuple[float, float] | None:
+        if (
+            detection is None
+            or frame_width is None
+            or frame_height is None
+            or frame_width <= 0
+            or frame_height <= 0
+        ):
+            return None
+        center = detection.bbox.center
+        return (
+            max(0.0, min(1.0, center.x / frame_width)),
+            max(0.0, min(1.0, center.y / frame_height)),
+        )
 
     def _turret_cat_in_fire_gate(
         self,
@@ -516,16 +558,25 @@ class SupervisorLoop:
             human_detected=raw_human_present,
             now=now_s,
         )
+        fixed_acquisition_candidate = (
+            assessment.candidate_cat
+            if (
+                armed
+                and fixed_detections_fresh
+                and assessment.cat_on_counter
+            )
+            else None
+        )
         self._fixed_target_acquisition.update(
             target_key=(
-                assessment.candidate_cat.label
-                if (
-                    armed
-                    and fixed_detections_fresh
-                    and assessment.cat_on_counter
-                    and assessment.candidate_cat is not None
-                )
+                fixed_acquisition_candidate.label
+                if fixed_acquisition_candidate is not None
                 else None
+            ),
+            target_center=self._normalized_detection_center(
+                fixed_acquisition_candidate,
+                frame_width=frame_width,
+                frame_height=frame_height,
             ),
             now=now_s,
         )
@@ -634,6 +685,11 @@ class SupervisorLoop:
                 turret_target_candidate.label
                 if turret_target_candidate is not None
                 else None
+            ),
+            target_center=self._normalized_detection_center(
+                turret_target_candidate,
+                frame_width=turret_frame_width,
+                frame_height=turret_frame_height,
             ),
             now=now_s,
         )

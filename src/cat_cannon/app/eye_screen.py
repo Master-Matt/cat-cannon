@@ -6,7 +6,7 @@ import random
 import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Protocol
 
 import numpy as np
 
@@ -82,6 +82,46 @@ class EyeState:
     next_look_time: float = field(default_factory=lambda: time.time() + random.uniform(3.0, 8.0))
     # Blink
     blink_until: float = 0.0
+
+
+class EyeSupervisorResult(Protocol):
+    state: SupervisorState
+    human_present: bool
+    target_visible: bool
+    turret_target_visible: bool
+
+
+def update_eye_mode(
+    state: EyeState,
+    step_result: EyeSupervisorResult | None,
+    *,
+    now: float,
+) -> None:
+    """Make every acquired physical tracking target visible in the eye state."""
+    if step_result is None:
+        state.mode = "idle"
+        return
+    if step_result.state in (SupervisorState.FIRE, SupervisorState.COOLDOWN):
+        state.mode = "firing"
+        state.last_detected = True
+        state.last_detection_time = now
+    elif step_result.state in (SupervisorState.TRACKING, SupervisorState.AIM_LOCK):
+        state.mode = "tracking"
+        state.last_detected = True
+        state.last_detection_time = now
+    elif step_result.turret_target_visible:
+        state.mode = "tracking"
+        state.last_detected = True
+        state.last_detection_time = now
+    elif step_result.human_present or step_result.target_visible:
+        state.mode = "alert"
+        state.last_detected = True
+        state.last_detection_time = now
+    elif state.last_detected and (now - state.last_detection_time) > 2.0:
+        state.last_detected = False
+        state.mode = "idle"
+    elif not state.last_detected:
+        state.mode = "idle"
 
 
 @dataclass
@@ -866,28 +906,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             update_eye_gaze_target(state, gaze)
 
             # --- Determine eye mode from supervisor state ---
-            if step_result is not None:
-                if step_result.state in (SupervisorState.FIRE, SupervisorState.COOLDOWN):
-                    state.mode = "firing"
-                    state.last_detected = True
-                    state.last_detection_time = now
-                elif step_result.state in (SupervisorState.TRACKING, SupervisorState.AIM_LOCK):
-                    state.mode = "tracking"
-                    state.last_detected = True
-                    state.last_detection_time = now
-                elif step_result.human_present or step_result.target_visible:
-                    state.mode = "alert"
-                    state.last_detected = True
-                    state.last_detection_time = now
-                else:
-                    # No target — expire after 2s
-                    if state.last_detected and (now - state.last_detection_time) > 2.0:
-                        state.last_detected = False
-                        state.mode = "idle"
-                    elif not state.last_detected:
-                        state.mode = "idle"
-            else:
-                state.mode = "idle"
+            update_eye_mode(state, step_result, now=now)
 
             # --- Random looking when idle ---
             if state.mode == "idle":

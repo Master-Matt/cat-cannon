@@ -1,9 +1,12 @@
+from types import SimpleNamespace
+
 from cat_cannon.app.eye_screen import (
     EyeState,
     FixedDetectionCadence,
     update_eye_gaze_target,
+    update_eye_mode,
 )
-from cat_cannon.domain.models import BoundingBox, Detection
+from cat_cannon.domain.models import BoundingBox, Detection, SupervisorState
 from cat_cannon.domain.safety import DetectionPolicy
 
 
@@ -55,3 +58,19 @@ def test_fixed_detection_switches_to_burst_rate_after_valid_target() -> None:
         for frame in range(1, 5)
     )
     assert cadence.should_detect(frame_counter=6, now=1.01) is False
+
+
+def test_eye_shows_tracking_for_acquired_turret_camera_cat() -> None:
+    state = EyeState()
+    result = SimpleNamespace(
+        state=SupervisorState.IDLE,
+        human_present=False,
+        target_visible=False,
+        turret_target_visible=True,
+    )
+
+    update_eye_mode(state, result, now=10.0)
+
+    assert state.mode == "tracking"
+    assert state.last_detected is True
+    assert state.last_detection_time == 10.0
