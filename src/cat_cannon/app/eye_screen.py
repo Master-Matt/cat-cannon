@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 
@@ -171,6 +172,52 @@ def build_eye_dataset_recorder(config: EyeConfig):
         root=config.dataset_dir,
         sample_interval_s=1.0 / max(0.001, config.dataset_sample_hz),
     )
+
+
+def _close_eye_background_resources(resources: dict[str, Any]) -> None:
+    session = resources.get("session")
+    controller = resources.get("controller")
+    if session is not None:
+        try:
+            session.stop()
+        except Exception:
+            pass
+    elif controller is not None:
+        try:
+            controller.safe_stop()
+            controller.close()
+        except Exception:
+            pass
+
+    event_recorder = resources.get("event_recorder")
+    if event_recorder is not None:
+        try:
+            finalized = event_recorder.close()
+            if finalized is not None:
+                print(f"[event-video] saved {finalized.video_path}", flush=True)
+        except Exception:
+            print("[event-video] recorder close failed", flush=True)
+
+    for key in ("fixed_camera", "turret_camera"):
+        camera = resources.get(key)
+        if camera is not None:
+            try:
+                camera.release()
+            except Exception:
+                pass
+
+
+def shutdown_eye_background_resources(
+    *,
+    resources: dict[str, Any],
+    loader_cancelled: threading.Event,
+    workers: Collection[threading.Thread],
+) -> None:
+    """Join background workers before releasing even late-created resources."""
+    loader_cancelled.set()
+    for worker in workers:
+        worker.join()
+    _close_eye_background_resources(resources)
 
 
 def _lerp(current: float, target: float, speed: float) -> float:
@@ -437,8 +484,6 @@ def _force_x11_fullscreen(
 
 def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     """Run the main eye screen. Returns next screen or None to exit."""
-    import threading
-
     cv2 = _require_cv2()
 
     state = EyeState(armed=config.arm_on_start)
@@ -507,8 +552,9 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     # --- Background resource loading ---
     # Load heavy resources in a thread so the eye animation stays responsive
     # and GNOME doesn't think the window is frozen.
-    _bg_resources: dict = {}
+    _bg_resources: dict[str, Any] = {}
     _bg_done = threading.Event()
+    _loader_cancelled = threading.Event()
 
     # Shared self-healing heartbeat state (populated lazily by the detection
     # loop once a turret camera + live controller exist; watched by a separate
@@ -522,7 +568,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     _fault_event = threading.Event()
     _fault_reason: dict = {"reason": None}
 
-    def _load_resources():
+    def _load_resources_impl():
         from cat_cannon.adapters.camera import open_camera
         from cat_cannon.adapters.rp2040_serial import RP2040SerialController
         from cat_cannon.adapters.ultralytics_yolo import UltralyticsYoloDetector, YoloRuntimeConfig
@@ -564,6 +610,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         except (Exception, SystemExit):
             pass
         _bg_resources["fixed_camera"] = fixed_camera
+        if _loader_cancelled.is_set():
+            return
 
         # Open turret camera
         turret_camera = None
@@ -580,6 +628,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             except (Exception, SystemExit):
                 pass
         _bg_resources["turret_camera"] = turret_camera
+        if _loader_cancelled.is_set():
+            return
 
         # Open controller
         controller = None
@@ -599,6 +649,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 pass
         _bg_resources["controller"] = controller
         _bg_resources["session"] = session
+        if _loader_cancelled.is_set():
+            return
 
         # Open detector (heaviest — TensorRT init)
         detector = None
@@ -616,6 +668,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         except Exception:
             pass
         _bg_resources["detector"] = detector
+        if _loader_cancelled.is_set():
+            return
 
         # Create supervisor (same code path as tracking test)
         zones = _bg_resources["zones"]
@@ -636,16 +690,17 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         )
         _bg_resources["dataset_recorder"] = build_eye_dataset_recorder(config)
 
-        _bg_done.set()
+    def _load_resources():
+        try:
+            _load_resources_impl()
+        finally:
+            _bg_done.set()
 
     loader_thread = threading.Thread(target=_load_resources, daemon=True)
     loader_thread.start()
 
     # These get set once background loading completes
     system_config = None
-    fixed_camera = None
-    turret_camera = None
-    controller = None
 
     # Shared state between detection thread and main loop (protected by lock)
     _detect_lock = threading.Lock()
@@ -893,9 +948,6 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             # --- Pick up background resources once ready ---
             if _bg_done.is_set() and system_config is None:
                 system_config = _bg_resources.get("system_config")
-                fixed_camera = _bg_resources.get("fixed_camera")
-                turret_camera = _bg_resources.get("turret_camera")
-                controller = _bg_resources.get("controller")
 
             # --- Read latest detection results (non-blocking) ---
             step_result = None
@@ -969,35 +1021,15 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         pass
     finally:
         _detect_running = False
-        detect_thread.join(timeout=2.0)
+        shutdown_eye_background_resources(
+            resources=_bg_resources,
+            loader_cancelled=_loader_cancelled,
+            workers=(loader_thread, detect_thread),
+        )
         try:
             health_thread.join(timeout=1.0)
         except Exception:
             pass
-        _session = _bg_resources.get("session")
-        if _session is not None:
-            try:
-                _session.stop()
-            except Exception:
-                pass
-        elif controller is not None:
-            try:
-                controller.safe_stop()
-                controller.close()
-            except Exception:
-                pass
-        _event_recorder = _bg_resources.get("event_recorder")
-        if _event_recorder is not None:
-            try:
-                finalized = _event_recorder.close()
-                if finalized is not None:
-                    print(f"[event-video] saved {finalized.video_path}", flush=True)
-            except Exception:
-                print("[event-video] recorder close failed", flush=True)
-        if fixed_camera is not None:
-            fixed_camera.release()
-        if turret_camera is not None:
-            turret_camera.release()
         cv2.destroyAllWindows()
 
     if _fault_event.is_set():

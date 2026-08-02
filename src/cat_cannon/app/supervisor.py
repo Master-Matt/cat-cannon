@@ -158,6 +158,10 @@ class SupervisorLoop:
         self._logged_active_zone_id: str | None = None
         self._confirmed_zone_id: str | None = None
         self._confirmed_track_id: str | None = None
+        self._engagement_latched = False
+        self._engagement_zone_id: str | None = None
+        self._engagement_track_id: str | None = None
+        self._engagement_last_turret_seen_at: float | None = None
         self._last_fixed_lead_cat: Detection | None = None
         self._last_fixed_lead_frame_width = 0
         self._last_fixed_lead_frame_height = 0
@@ -167,6 +171,55 @@ class SupervisorLoop:
         self._corner_recovery_active = False
         self._corner_recovery_directions: tuple[int, int] = (0, 0)
         self._corner_recovery_failure_logged = False
+
+    def _clear_engagement_latch(self) -> None:
+        self._engagement_latched = False
+        self._engagement_zone_id = None
+        self._engagement_track_id = None
+        self._engagement_last_turret_seen_at = None
+
+    def _update_engagement_latch(
+        self,
+        *,
+        armed: bool,
+        human_present: bool,
+        fixed_counter_confirmed: bool,
+        fixed_zone_id: str | None,
+        fixed_track_id: str | None,
+        turret_target_visible: bool,
+        now: float,
+    ) -> bool:
+        """Keep fixed-zone authorization while the same turret view stays live."""
+        if not armed or human_present:
+            self._clear_engagement_latch()
+            return False
+
+        if fixed_counter_confirmed and turret_target_visible:
+            self._engagement_latched = True
+            self._engagement_zone_id = fixed_zone_id
+            self._engagement_track_id = fixed_track_id
+            self._engagement_last_turret_seen_at = now
+            return True
+
+        if not self._engagement_latched:
+            return False
+
+        if turret_target_visible:
+            self._engagement_last_turret_seen_at = now
+            return True
+
+        last_seen_at = self._engagement_last_turret_seen_at
+        lost_grace_seconds = (
+            self.config.tracking_tuning.acquisition_window_seconds
+        )
+        if (
+            last_seen_at is not None
+            and now - last_seen_at <= lost_grace_seconds
+        ):
+            return True
+
+        self._clear_engagement_latch()
+        return False
 
     def _find_turret_cat(
         self,
@@ -226,6 +279,7 @@ class SupervisorLoop:
             for detection in turret_detections
             if self._is_trackable_turret_detection(
                 detection,
+                policy=policy,
                 frame_width=frame_width,
                 frame_height=frame_height,
             )
@@ -246,9 +300,12 @@ class SupervisorLoop:
         self,
         detection: Detection,
         *,
+        policy: DetectionPolicy,
         frame_width: int | None,
         frame_height: int | None,
     ) -> bool:
+        if detection.label != policy.cat_class:
+            return True
         if (
             frame_width is None
             or frame_height is None
@@ -572,6 +629,7 @@ class SupervisorLoop:
         now_s = time.monotonic() if now is None else float(now)
         if not armed:
             self._reset_corner_recovery()
+            self._clear_engagement_latch()
             self._fixed_target_acquisition.reset()
             self._turret_target_acquisition.reset()
         policy = detection_policy_override or self.config.detection_policy
@@ -799,6 +857,21 @@ class SupervisorLoop:
             # No target — reset EMA state
             self._filtered_pan = 0.0
             self._filtered_tilt = 0.0
+
+        engagement_latched = self._update_engagement_latch(
+            armed=armed,
+            human_present=human_present,
+            fixed_counter_confirmed=counter_confirmed,
+            fixed_zone_id=active_zone_id,
+            fixed_track_id=candidate_track_id,
+            turret_target_visible=turret_target_visible,
+            now=now_s,
+        )
+        if engagement_latched:
+            counter_confirmed = True
+            target_visible = True
+            active_zone_id = self._engagement_zone_id
+            candidate_track_id = self._engagement_track_id
 
         base_fire_permitted = counter_confirmed and not human_blocks_fire
         if (

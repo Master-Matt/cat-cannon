@@ -1,8 +1,10 @@
+from threading import Event, Thread
 from types import SimpleNamespace
 
 from cat_cannon.app.eye_screen import (
     EyeState,
     FixedDetectionCadence,
+    shutdown_eye_background_resources,
     update_eye_gaze_target,
     update_eye_mode,
 )
@@ -74,3 +76,30 @@ def test_eye_shows_tracking_for_acquired_turret_camera_cat() -> None:
     assert state.mode == "tracking"
     assert state.last_detected is True
     assert state.last_detection_time == 10.0
+
+
+def test_eye_shutdown_releases_resources_created_during_navigation() -> None:
+    cancelled = Event()
+    resources = {}
+    camera = SimpleNamespace(release_calls=0)
+
+    def release() -> None:
+        camera.release_calls += 1
+
+    camera.release = release
+
+    def finish_loading_after_navigation() -> None:
+        cancelled.wait()
+        resources["turret_camera"] = camera
+
+    loader = Thread(target=finish_loading_after_navigation)
+    loader.start()
+
+    shutdown_eye_background_resources(
+        resources=resources,
+        loader_cancelled=cancelled,
+        workers=(loader,),
+    )
+
+    assert loader.is_alive() is False
+    assert camera.release_calls == 1
