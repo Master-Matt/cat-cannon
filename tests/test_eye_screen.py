@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from cat_cannon.app.eye_screen import (
     EyeState,
     FixedDetectionCadence,
+    _set_x11_kiosk_window_properties,
     shutdown_eye_background_resources,
     update_eye_gaze_target,
     update_eye_mode,
@@ -36,6 +37,25 @@ def test_idle_random_gaze_is_preserved_without_a_prior_detection() -> None:
 
     assert state.target_gaze_x == 0.5
     assert state.target_gaze_y == 0.2
+
+
+def test_x11_kiosk_window_is_borderless_and_bypasses_compositor() -> None:
+    property_calls = []
+    target = SimpleNamespace(
+        change_property=lambda *args: property_calls.append(args),
+    )
+
+    _set_x11_kiosk_window_properties(
+        target,
+        motif_hints="motif",
+        bypass_compositor="bypass",
+        cardinal="cardinal",
+    )
+
+    assert property_calls == [
+        ("motif", "motif", 32, [2, 0, 0, 0, 0]),
+        ("bypass", "cardinal", 32, [1]),
+    ]
 
 
 def test_fixed_detection_switches_to_burst_rate_after_valid_target() -> None:

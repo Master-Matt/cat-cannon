@@ -366,6 +366,18 @@ def _point_in_circle(px: int, py: int, cx: int, cy: int, r: int) -> bool:
     return (px - cx) ** 2 + (py - cy) ** 2 <= r ** 2
 
 
+def _set_x11_kiosk_window_properties(
+    target: Any,
+    *,
+    motif_hints: Any,
+    bypass_compositor: Any,
+    cardinal: Any,
+) -> None:
+    """Make the kiosk borderless and keep its frames out of the compositor."""
+    target.change_property(motif_hints, motif_hints, 32, [2, 0, 0, 0, 0])
+    target.change_property(bypass_compositor, cardinal, 32, [1])
+
+
 def _force_x11_fullscreen(
     window_title: str, *, attempts: int = 40, delay_s: float = 0.25
 ) -> None:
@@ -374,14 +386,14 @@ def _force_x11_fullscreen(
     OpenCV's Qt ``WND_PROP_FULLSCREEN`` is not honored cleanly by GNOME/mutter —
     the window keeps a title bar and ends up 37px too tall (offset/clipped). So
     we drive the window manager directly: strip decorations via
-    ``_MOTIF_WM_HINTS``, clear any fullscreen state, then size + position the
-    window to exactly cover the root window and raise it. Runs in a background
-    thread because the window is not reparented/named the instant it is shown,
-    so we retry until it appears. No-op if python-xlib is unavailable or there
-    is no X display.
+    ``_MOTIF_WM_HINTS``, bypass compositor buffering, clear any fullscreen
+    state, then size + position the window to exactly cover the root window and
+    raise it. Runs in a background thread because the window is not
+    reparented/named the instant it is shown, so we retry until it appears.
+    No-op if python-xlib is unavailable or there is no X display.
     """
     try:
-        from Xlib import X, display
+        from Xlib import X, Xatom, display
         from Xlib.protocol import event
     except Exception:
         return
@@ -396,6 +408,7 @@ def _force_x11_fullscreen(
     net_fullscreen = d.intern_atom("_NET_WM_STATE_FULLSCREEN")
     net_active = d.intern_atom("_NET_ACTIVE_WINDOW")
     motif_hints = d.intern_atom("_MOTIF_WM_HINTS")
+    bypass_compositor = d.intern_atom("_NET_WM_BYPASS_COMPOSITOR")
     mask = X.SubstructureRedirectMask | X.SubstructureNotifyMask
 
     try:
@@ -434,10 +447,16 @@ def _force_x11_fullscreen(
 
                 target = max(targets, key=_area)
                 try:
-                    # Strip window-manager decorations (MWM_HINTS_DECORATIONS,
-                    # decorations = 0 -> none).
-                    target.change_property(
-                        motif_hints, motif_hints, 32, [2, 0, 0, 0, 0]
+                    # Strip decorations and keep the continuously refreshed
+                    # OpenCV surface out of GNOME's compositor. On Jetson's
+                    # unified-memory graphics stack, compositor buffering this
+                    # kiosk surface causes gnome-shell memory to grow without
+                    # bound during unattended operation.
+                    _set_x11_kiosk_window_properties(
+                        target,
+                        motif_hints=motif_hints,
+                        bypass_compositor=bypass_compositor,
+                        cardinal=Xatom.CARDINAL,
                     )
                     # Clear any cv2-set fullscreen state so our explicit size
                     # (exactly the screen) is not overridden to a 37px-too-tall
