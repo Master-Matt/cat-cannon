@@ -233,6 +233,7 @@ You can run the same calibrator from the laptop bench setup:
 - `vision.yolo_detector: yoloe` uses promptable YOLOE with `vision.yoloe_prompts`
 - `vision.yolo_imgsz` controls the inference image size without rebuilding the code
 - `tracking.horizontal_deadband_px` and `tracking.vertical_deadband_px` control aim lock
+- `tracking_tuning.turret_target_hold_seconds` bridges brief detector flicker after lock
 
 The Jetson runtime preserves `configs/app.yaml` and `configs/zones.yaml` during deploy so local
 calibration and model choices are not overwritten by example defaults.

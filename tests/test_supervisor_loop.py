@@ -480,8 +480,90 @@ def test_supervisor_keeps_acquired_target_through_a_brief_missed_frame() -> None
     )
 
     assert acquired.correction is not None
-    assert missed.correction is None
+    assert missed.correction is not None
+    assert missed.turret_target_visible is True
     assert resumed.correction is not None
+
+
+def test_supervisor_keeps_fire_lock_through_brief_turret_detection_flicker() -> None:
+    supervisor, controller = _supervisor()
+    centered_turret_cat = Detection(
+        "cat-1",
+        "cat",
+        0.92,
+        BoundingBox(90, 90, 20, 20),
+    )
+
+    for now in (0.0, 0.1, 0.2):
+        locked = supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[centered_turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=now,
+        )
+
+    held_results = [
+        supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=now,
+        )
+        for now in (0.3, 0.4, 0.5)
+    ]
+
+    assert locked.fire_commanded is True
+    assert all(result.aim_locked for result in held_results)
+    assert all(result.fire_permitted for result in held_results)
+    assert held_results[-1].fire_commanded is True
+    assert controller.fired == 2
+
+
+def test_supervisor_does_not_hold_cat_target_over_current_person_detection() -> None:
+    supervisor, controller = _supervisor()
+    centered_turret_cat = Detection(
+        "cat-1",
+        "cat",
+        0.92,
+        BoundingBox(90, 90, 20, 20),
+    )
+
+    for now in (0.0, 0.1, 0.2):
+        supervisor.process_frame(
+            [_right_side_cat_detection()],
+            frame_width=200,
+            frame_height=200,
+            armed=True,
+            turret_detections=[centered_turret_cat],
+            turret_frame_width=200,
+            turret_frame_height=200,
+            now=now,
+        )
+    fired_before_person = controller.fired
+
+    person_frame = supervisor.process_frame(
+        [_right_side_cat_detection()],
+        frame_width=200,
+        frame_height=200,
+        armed=True,
+        turret_detections=[_person_detection()],
+        turret_frame_width=200,
+        turret_frame_height=200,
+        now=0.3,
+    )
+
+    assert person_frame.turret_target_visible is False
+    assert person_frame.aim_locked is False
+    assert person_frame.fire_permitted is False
+    assert controller.fired == fired_before_person
 
 
 def test_supervisor_counts_only_confidence_valid_detections_for_acquisition() -> None:
@@ -584,8 +666,13 @@ def test_supervisor_does_not_combine_target_classes_during_acquisition() -> None
     assert controller.pan_commands
 
 
-def test_supervisor_clears_tracking_filter_when_turret_target_disappears() -> None:
-    supervisor, _controller = _supervisor()
+def test_supervisor_clears_tracking_filter_after_turret_target_hold_expires() -> None:
+    supervisor, _controller = _supervisor(
+        tracking_tuning=TrackingTuning(
+            acquisition_frame_threshold=1,
+            turret_target_hold_seconds=0.5,
+        )
+    )
     turret_cat = Detection("cat-1", "cat", 0.92, BoundingBox(15, 90, 20, 20))
 
     supervisor.process_frame(
@@ -596,6 +683,7 @@ def test_supervisor_clears_tracking_filter_when_turret_target_disappears() -> No
         turret_detections=[turret_cat],
         turret_frame_width=200,
         turret_frame_height=200,
+        now=0.0,
     )
     assert supervisor._filtered_pan != 0.0
 
@@ -607,6 +695,7 @@ def test_supervisor_clears_tracking_filter_when_turret_target_disappears() -> No
         turret_detections=[],
         turret_frame_width=200,
         turret_frame_height=200,
+        now=0.501,
     )
 
     assert supervisor._filtered_pan == 0.0

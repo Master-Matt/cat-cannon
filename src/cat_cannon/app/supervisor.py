@@ -152,6 +152,9 @@ class SupervisorLoop:
             window_seconds=acquisition_window,
             frame_threshold=acquisition_threshold,
         )
+        self._last_acquired_turret_target: Detection | None = None
+        self._last_acquired_turret_frame_size: tuple[int, int] | None = None
+        self._last_acquired_turret_target_at: float | None = None
         # EMA-filtered tracking state (same algorithm as eye_screen)
         self._filtered_pan = 0.0
         self._filtered_tilt = 0.0
@@ -178,6 +181,43 @@ class SupervisorLoop:
         self._engagement_track_id = None
         self._engagement_last_turret_seen_at = None
 
+    def _clear_turret_target_hold(self) -> None:
+        self._last_acquired_turret_target = None
+        self._last_acquired_turret_frame_size = None
+        self._last_acquired_turret_target_at = None
+
+    def _remember_acquired_turret_target(
+        self,
+        *,
+        target: Detection,
+        frame_width: int,
+        frame_height: int,
+        now: float,
+    ) -> None:
+        self._last_acquired_turret_target = target
+        self._last_acquired_turret_frame_size = (frame_width, frame_height)
+        self._last_acquired_turret_target_at = now
+
+    def _held_turret_target(
+        self,
+        *,
+        frame_width: int,
+        frame_height: int,
+        now: float,
+    ) -> Detection | None:
+        target = self._last_acquired_turret_target
+        target_at = self._last_acquired_turret_target_at
+        if (
+            target is None
+            or target_at is None
+            or self._last_acquired_turret_frame_size != (frame_width, frame_height)
+            or now - target_at
+            > self.config.tracking_tuning.turret_target_hold_seconds
+        ):
+            self._clear_turret_target_hold()
+            return None
+        return target
+
     def _update_engagement_latch(
         self,
         *,
@@ -187,6 +227,7 @@ class SupervisorLoop:
         fixed_zone_id: str | None,
         fixed_track_id: str | None,
         turret_target_visible: bool,
+        turret_target_observed: bool,
         now: float,
     ) -> bool:
         """Keep fixed-zone authorization while the same turret view stays live."""
@@ -198,14 +239,20 @@ class SupervisorLoop:
             self._engagement_latched = True
             self._engagement_zone_id = fixed_zone_id
             self._engagement_track_id = fixed_track_id
-            self._engagement_last_turret_seen_at = now
+            if turret_target_observed:
+                self._engagement_last_turret_seen_at = now
+            elif self._engagement_last_turret_seen_at is None:
+                self._engagement_last_turret_seen_at = (
+                    self._last_acquired_turret_target_at
+                )
             return True
 
         if not self._engagement_latched:
             return False
 
         if turret_target_visible:
-            self._engagement_last_turret_seen_at = now
+            if turret_target_observed:
+                self._engagement_last_turret_seen_at = now
             return True
 
         last_seen_at = self._engagement_last_turret_seen_at
@@ -632,6 +679,7 @@ class SupervisorLoop:
             self._clear_engagement_latch()
             self._fixed_target_acquisition.reset()
             self._turret_target_acquisition.reset()
+            self._clear_turret_target_hold()
         policy = detection_policy_override or self.config.detection_policy
         # Fixed camera: zone intersection + counter confirmation + human presence
         fixed_frame_zones = scale_counter_zones(
@@ -784,11 +832,38 @@ class SupervisorLoop:
             ),
             now=now_s,
         )
-        turret_target = (
-            turret_target_candidate
-            if turret_target_acquired
-            else None
-        )
+        turret_target_observed = False
+        turret_target = None
+        if (
+            turret_target_candidate is not None
+            and turret_target_acquired
+            and turret_frame_width is not None
+            and turret_frame_height is not None
+        ):
+            turret_target_observed = True
+            turret_target = turret_target_candidate
+            self._remember_acquired_turret_target(
+                target=turret_target_candidate,
+                frame_width=turret_frame_width,
+                frame_height=turret_frame_height,
+                now=now_s,
+            )
+        elif turret_target_candidate is not None:
+            # A current but spatially incoherent box is a new acquisition, not
+            # detector flicker from the previously acquired target.
+            self._clear_turret_target_hold()
+        elif (
+            armed
+            and not raw_human_present
+            and not self._corner_recovery_active
+            and turret_frame_width is not None
+            and turret_frame_height is not None
+        ):
+            turret_target = self._held_turret_target(
+                frame_width=turret_frame_width,
+                frame_height=turret_frame_height,
+                now=now_s,
+            )
         if (
             armed
             and turret_detections is not None
@@ -865,6 +940,7 @@ class SupervisorLoop:
             fixed_zone_id=active_zone_id,
             fixed_track_id=candidate_track_id,
             turret_target_visible=turret_target_visible,
+            turret_target_observed=turret_target_observed,
             now=now_s,
         )
         if engagement_latched:
