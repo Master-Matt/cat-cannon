@@ -110,6 +110,7 @@ class HeartbeatConfig:
 
     enabled: bool = False
     liveness_timeout_s: float = 15.0
+    desktop_rss_limit_mb: float = 2048.0
     discord_webhook_url: str = ""
     discord_webhook_env: str = "CAT_CANNON_DISCORD_WEBHOOK_URL"
     # Guardian / restart-escalation policy.
@@ -298,6 +299,15 @@ def _heartbeat_config_from_raw(raw: dict) -> HeartbeatConfig:
         enabled=bool(heartbeat.get("enabled", defaults.enabled)),
         liveness_timeout_s=max(
             1.0, float(heartbeat.get("liveness_timeout_s", defaults.liveness_timeout_s))
+        ),
+        desktop_rss_limit_mb=max(
+            0.0,
+            float(
+                heartbeat.get(
+                    "desktop_rss_limit_mb",
+                    defaults.desktop_rss_limit_mb,
+                )
+            ),
         ),
         discord_webhook_url=str(heartbeat.get("discord_webhook_url", "") or ""),
         discord_webhook_env=str(

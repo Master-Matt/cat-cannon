@@ -98,7 +98,7 @@ class Guardian:
                 print("[guardian] app exited cleanly; stopping", flush=True)
                 return 0
 
-            reason = "missed heartbeat" if exit_code == SENTINEL_EXIT_CODE else "crash"
+            reason = "runtime watchdog" if exit_code == SENTINEL_EXIT_CODE else "crash"
             decision = self._policy.record_fault(reason, now=self._clock())
 
             if decision is RestartDecision.REBOOT:

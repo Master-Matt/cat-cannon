@@ -7,6 +7,7 @@ from cat_cannon.app.heartbeat import (
     RestartDecision,
     RestartPolicy,
     RestartPolicyConfig,
+    process_rss_mb,
 )
 
 
@@ -27,6 +28,26 @@ def test_liveness_detects_stale_loop():
     live.beat(now=200.0)
     assert not live.is_stale(now=210.0)
     assert live.age(now=205.0) == 5.0
+
+
+def test_process_rss_mb_aggregates_exact_process_names(tmp_path):
+    for pid, name, rss_kb in (
+        ("100", "gnome-shell", 2048),
+        ("101", "gnome-shell", 1536),
+        ("102", "gnome-software", 8192),
+    ):
+        process_dir = tmp_path / pid
+        process_dir.mkdir()
+        (process_dir / "status").write_text(
+            f"Name:\t{name}\nVmRSS:\t{rss_kb} kB\n",
+            encoding="utf-8",
+        )
+
+    assert process_rss_mb("gnome-shell", proc_root=tmp_path) == 3.5
+
+
+def test_process_rss_mb_tolerates_missing_proc_root(tmp_path):
+    assert process_rss_mb("gnome-shell", proc_root=tmp_path / "missing") == 0.0
 
 
 def _watchdog(**overrides):

@@ -10,11 +10,10 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
 
 # --- Singleton: only one guardian at a time ---
-# The pidfile lives in the repo and survives reboots, so after a reboot the
-# stored PID may have been reused by an unrelated process. Only treat the
-# guardian as already running if the live process is actually a cat_cannon
-# guardian — otherwise a reused PID would wrongly block autostart on boot.
-PIDFILE="$ROOT_DIR/.cat-cannon-guardian.pid"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/cat-cannon-$UID}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cat-cannon"
+mkdir -p "$RUNTIME_DIR" "$STATE_DIR"
+PIDFILE="$RUNTIME_DIR/guardian.pid"
 if [[ -f "$PIDFILE" ]]; then
   OLD_PID=$(cat "$PIDFILE" 2>/dev/null)
   if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null \
@@ -29,7 +28,7 @@ fi
 echo $$ > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
-LOG_FILE="$ROOT_DIR/cat-cannon-guardian.log"
+LOG_FILE="$STATE_DIR/guardian.log"
 # Unattended/production launch: auto-arm on start so the turret is live after a
 # boot or a guardian self-heal restart. (Manual scripts/run_app.sh stays unarmed
 # for dev safety.) Override by setting CAT_CANNON_ARM=0.

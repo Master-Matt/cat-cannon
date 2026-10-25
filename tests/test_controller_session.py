@@ -14,6 +14,7 @@ class FakeController:
         self.servo_limits = []
         self.motion_directions = []
         self.heartbeat_payload = {"enabled": True}
+        self.heartbeat_error: Exception | None = None
         self.enabled_again = threading.Event()
 
     def handshake(self):
@@ -21,6 +22,8 @@ class FakeController:
 
     def heartbeat(self):
         self.heartbeats += 1
+        if self.heartbeat_error is not None:
+            raise self.heartbeat_error
         return type("Response", (), {"payload": dict(self.heartbeat_payload)})()
 
     def set_enabled(self, enabled: bool):
@@ -125,3 +128,30 @@ def test_controller_session_restores_armed_state_after_watchdog_disable() -> Non
 
     assert recovered is True
     assert controller.enabled[:2] == [True, True]
+
+
+def test_controller_session_faults_after_consecutive_heartbeat_failures() -> None:
+    controller = FakeController()
+    controller.heartbeat_error = OSError("serial device disconnected")
+    session = ControllerSession(controller=controller, max_consecutive_failures=2)
+
+    assert session._heartbeat_once() is False
+    assert session.faulted is False
+    assert session._heartbeat_once() is False
+
+    assert session.faulted is True
+    assert session.fault_reason == "OSError: serial device disconnected"
+
+
+def test_controller_session_resets_transient_heartbeat_failure_count() -> None:
+    controller = FakeController()
+    session = ControllerSession(controller=controller, max_consecutive_failures=2)
+    controller.heartbeat_error = OSError("transient serial timeout")
+
+    assert session._heartbeat_once() is False
+    controller.heartbeat_error = None
+    assert session._heartbeat_once() is True
+    controller.heartbeat_error = OSError("another transient serial timeout")
+    assert session._heartbeat_once() is False
+
+    assert session.faulted is False

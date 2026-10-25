@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import threading
 import time
+import traceback
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -626,8 +627,10 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 fps=config.camera_fps,
                 rotate_180=False,
             )
-        except (Exception, SystemExit):
-            pass
+        except (Exception, SystemExit) as exc:
+            raise RuntimeError(
+                f"fixed camera unavailable: {config.fixed_camera}"
+            ) from exc
         _bg_resources["fixed_camera"] = fixed_camera
         if _loader_cancelled.is_set():
             return
@@ -644,8 +647,10 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     fps=config.camera_fps,
                     rotate_180=config.turret_rotate_180,
                 )
-            except (Exception, SystemExit):
-                pass
+            except (Exception, SystemExit) as exc:
+                raise RuntimeError(
+                    f"turret camera unavailable: {config.turret_camera}"
+                ) from exc
         _bg_resources["turret_camera"] = turret_camera
         if _loader_cancelled.is_set():
             return
@@ -654,6 +659,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         controller = None
         session = None
         if config.live_controller:
+            ctrl = None
             try:
                 ctrl = RP2040SerialController.open(port=config.port, baudrate=config.baudrate)
                 session = ControllerSession(
@@ -664,8 +670,15 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 if config.arm_on_start:
                     session.enable()
                 controller = ctrl
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    if session is not None:
+                        session.stop()
+                    elif ctrl is not None:
+                        ctrl.close()
+                except Exception:
+                    pass
+                raise RuntimeError("RP2040 controller unavailable") from exc
         _bg_resources["controller"] = controller
         _bg_resources["session"] = session
         if _loader_cancelled.is_set():
@@ -684,8 +697,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                     prompts=config.yolo_prompts,
                 ),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("YOLO detector initialization failed") from exc
         _bg_resources["detector"] = detector
         if _loader_cancelled.is_set():
             return
@@ -712,6 +725,14 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     def _load_resources():
         try:
             _load_resources_impl()
+        except BaseException as exc:
+            print(
+                f"[startup] resource loading failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            traceback.print_exc()
+            _fault_reason["reason"] = f"startup failure: {type(exc).__name__}: {exc}"
+            _fault_event.set()
         finally:
             _bg_done.set()
 
@@ -727,7 +748,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     _latest_gaze = None  # (gaze_x, gaze_y) or None
     _detect_running = True
 
-    def _detection_loop():
+    def _run_detection_loop():
         """Background thread: runs detection + supervisor at GPU speed."""
         nonlocal _latest_step_result, _latest_gaze, _detect_running
         frame_counter = 0
@@ -922,31 +943,65 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
 
             frame_counter += 1
 
+    def _detection_loop():
+        try:
+            _run_detection_loop()
+        except Exception as exc:
+            print(
+                f"[detection] worker crashed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            traceback.print_exc()
+            _fault_reason["reason"] = (
+                f"detection failure: {type(exc).__name__}: {exc}"
+            )
+            _fault_event.set()
+
     detect_thread = threading.Thread(target=_detection_loop, daemon=True)
     detect_thread.start()
 
     def _health_monitor():
         """Watch loop liveness and signal the guardian when the app hangs."""
+        from cat_cannon.app.heartbeat import process_rss_mb
         from cat_cannon.app.notify import post_discord_message
 
         while _detect_running and not _fault_event.is_set():
             time.sleep(0.5)
-            if not _hb["active"]:
-                continue
             if not state.armed:
                 # Disarmed (SAFE): the operator deliberately took the turret
                 # offline, so suppress heartbeat-driven restarts.
                 continue
-            _live = _hb["live"]
-            reason = "hang" if _live is not None and _live.is_stale() else None
+            reason = None
+            _session = _bg_resources.get("session")
+            if _session is not None and _session.faulted:
+                reason = (
+                    "controller communication failure: "
+                    f"{_session.fault_reason or 'unknown serial error'}"
+                )
+
+            _cfg = _hb["cfg"] or _bg_resources.get("heartbeat_config")
+            if reason is None and _cfg is not None and _cfg.enabled:
+                rss_limit_mb = _cfg.desktop_rss_limit_mb
+                desktop_rss_mb = process_rss_mb("gnome-shell")
+                if rss_limit_mb > 0.0 and desktop_rss_mb > rss_limit_mb:
+                    reason = (
+                        "desktop memory pressure: "
+                        f"gnome-shell RSS {desktop_rss_mb:.0f} MB "
+                        f"exceeds {rss_limit_mb:.0f} MB"
+                    )
+
+            if reason is None and _hb["active"]:
+                _live = _hb["live"]
+                if _live is not None and _live.is_stale():
+                    reason = "detection heartbeat stale"
             if reason is not None:
                 _fault_reason["reason"] = reason
-                _cfg = _hb["cfg"]
                 try:
-                    post_discord_message(
-                        _cfg.resolved_discord_webhook_url(),
-                        f"\u26a0\ufe0f Cat Cannon missed heartbeat ({reason}) \u2014 restarting.",
-                    )
+                    if _cfg is not None:
+                        post_discord_message(
+                            _cfg.resolved_discord_webhook_url(),
+                            f"\u26a0\ufe0f Cat Cannon runtime fault ({reason}) \u2014 restarting.",
+                        )
                 except Exception:
                     pass
                 _fault_event.set()

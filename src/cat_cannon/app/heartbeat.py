@@ -13,11 +13,42 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 # Exit code the running app uses to tell the guardian "I detected my own fault
 # (hang / no motion) and exited on purpose — please restart me". Chosen from the
 # 64-78 sysexits range to avoid clashing with ordinary crashes.
 SENTINEL_EXIT_CODE = 70
+
+
+def process_rss_mb(
+    process_name: str,
+    *,
+    proc_root: str | Path = "/proc",
+) -> float:
+    """Return aggregate RSS for processes with an exact Linux ``Name``."""
+    total_kb = 0
+    try:
+        process_dirs = list(Path(proc_root).iterdir())
+    except OSError:
+        return 0.0
+
+    for process_dir in process_dirs:
+        if not process_dir.name.isdigit():
+            continue
+        try:
+            fields = {}
+            for line in (process_dir / "status").read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key in {"Name", "VmRSS"}:
+                    fields[key] = value.strip()
+            if fields.get("Name") != process_name:
+                continue
+            rss_value = fields.get("VmRSS", "0 kB").split(maxsplit=1)[0]
+            total_kb += int(rss_value)
+        except (OSError, ValueError):
+            continue
+    return total_kb / 1024.0
 
 
 class FaultReason(enum.Enum):

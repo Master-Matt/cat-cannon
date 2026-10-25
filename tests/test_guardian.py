@@ -72,7 +72,7 @@ def test_sentinel_triggers_restart_and_notify():
     rc = _guardian(rec).run_forever()
     assert rc == 0
     assert rec.runs == 2
-    assert any("missed heartbeat" in m for m in rec.messages)
+    assert any("runtime watchdog" in m for m in rec.messages)
     assert rec.reboots == 0
 
 

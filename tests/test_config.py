@@ -5,6 +5,7 @@ from cat_cannon.config import (
     clear_servo_calibration,
     clear_servo_limits,
     load_event_recording_config,
+    load_heartbeat_config,
     load_system_config,
     save_servo_limit,
     save_servo_limit_calibration,
@@ -221,6 +222,12 @@ def test_example_config_exposes_human_lockout_hysteresis() -> None:
 
     assert config.human_lockout.window_seconds == 2.0
     assert config.human_lockout.frame_threshold == 5
+
+
+def test_example_config_limits_desktop_memory_growth() -> None:
+    config = load_heartbeat_config("configs/app.example.yaml")
+
+    assert config.desktop_rss_limit_mb == 2048
 
 
 def test_vision_config_rejects_unknown_detector(tmp_path: Path) -> None:

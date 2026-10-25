@@ -270,4 +270,6 @@ user) makes the device come back on its own and stay on the app:
   without a password (required for reboot escalation).
 
 After running it, reboot once to confirm auto-login + guardian autostart, then
-check `cat-cannon-guardian.log` and `cat-cannon.log` in the repo root.
+check `~/.local/state/cat-cannon/guardian.log` and
+`~/.local/state/cat-cannon/app.log`. These logs live outside the deployment
+directory so an `rsync --delete` update cannot remove incident evidence.

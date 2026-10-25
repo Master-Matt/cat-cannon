@@ -134,6 +134,8 @@ def build_rsync_command(
         ".mypy_cache/",
         "*.pyc",
         "*.engine*",
+        "*.log*",
+        ".cat-cannon*.pid",
         "everything-claude-code/",
         "data/",
         # Preserve user-edited configs on the remote
@@ -265,6 +267,13 @@ def _run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def redact_command(command: list[str], *, password: str | None) -> str:
+    display_command = shlex.join(command)
+    if password:
+        return display_command.replace(password, "***")
+    return display_command
+
+
 def build_deploy_steps(
     config: JetsonDeployConfig,
     *,
@@ -351,12 +360,14 @@ def deploy(config: JetsonDeployConfig) -> None:
         steps, close_command = build_deploy_steps(config, control_path=control_path)
         try:
             for step in steps:
-                print(f"[jetson] running {step.name}: {shlex.join(step.command)}")
+                display_command = redact_command(step.command, password=config.password)
+                print(f"[jetson] running {step.name}: {display_command}")
                 _run(step.command)
         except subprocess.CalledProcessError as exc:
+            display_command = redact_command(step.command, password=config.password)
             raise JetsonDeployError(
                 f"step '{step.name}' failed with exit code {exc.returncode}\n"
-                f"command: {shlex.join(step.command)}"
+                f"command: {display_command}"
             ) from exc
         finally:
             subprocess.run(close_command, check=False)

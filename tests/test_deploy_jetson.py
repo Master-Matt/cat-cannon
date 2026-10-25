@@ -7,6 +7,7 @@ from cat_cannon.app.deploy_jetson import (
     build_deploy_steps,
     build_rsync_command,
     build_ssh_command,
+    redact_command,
 )
 
 
@@ -123,6 +124,22 @@ def test_build_ssh_command_uses_sshpass_prefix_when_password_present(monkeypatch
     assert "echo ok" in command
 
 
+def test_redact_command_hides_password_in_ssh_and_remote_sudo_command() -> None:
+    command = [
+        "sshpass",
+        "-p",
+        "secret-value",
+        "ssh",
+        "host",
+        "printf secret-value | sudo command",
+    ]
+
+    display = redact_command(command, password="secret-value")
+
+    assert "secret-value" not in display
+    assert display.count("***") == 2
+
+
 def test_build_rsync_command_excludes_local_virtualenv_and_cache() -> None:
     config = JetsonDeployConfig(
         host="192.168.55.1",
@@ -145,6 +162,8 @@ def test_build_rsync_command_excludes_local_virtualenv_and_cache() -> None:
     assert "--exclude=.venv/" in command
     assert "--exclude=.pytest_cache/" in command
     assert "--exclude=*.engine*" in command
+    assert "--exclude=*.log*" in command
+    assert "--exclude=.cat-cannon*.pid" in command
     assert "--exclude=everything-claude-code/" in command
     assert "--exclude=data/" in command
     assert command[-2:] == ["/workspace/cat_cannon/", "mdev@192.168.55.1:/home/mdev/cat_cannon/"]

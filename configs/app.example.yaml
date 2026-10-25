@@ -91,6 +91,9 @@ event_recording:
 heartbeat:
   enabled: false
   liveness_timeout_s: 15        # detection loop must tick within this window
+  # Reboot through the guardian if GNOME/compositor memory growth threatens
+  # inference. Set to 0 to disable this kiosk-specific guard.
+  desktop_rss_limit_mb: 2048
   discord_webhook_url: ''
   discord_webhook_env: CAT_CANNON_DISCORD_WEBHOOK_URL
   restart_reboot_threshold: 3   # this many app restarts within the window -> reboot
