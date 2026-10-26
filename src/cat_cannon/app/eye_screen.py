@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import threading
 import time
@@ -13,6 +14,7 @@ from typing import Any, Literal, Protocol
 import numpy as np
 
 from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
+from cat_cannon.app.heartbeat import SENTINEL_EXIT_CODE, CameraReadWatchdog
 from cat_cannon.app.idle_motion import IdleCentering
 from cat_cannon.app.perception_cache import PerceptionCache
 from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, EventRecordingConfig, YoloPrompt
@@ -21,6 +23,9 @@ from cat_cannon.domain.safety import DetectionPolicy
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 FIXED_PERCEPTION_MAX_AGE_SECONDS = 1.0
+CAMERA_READ_FAILURE_LIMIT = 5
+FAULT_JOIN_TIMEOUT_SECONDS = 1.0
+FAULT_EXIT_GRACE_SECONDS = 5.0
 
 
 def _require_cv2():
@@ -213,12 +218,22 @@ def shutdown_eye_background_resources(
     resources: dict[str, Any],
     loader_cancelled: threading.Event,
     workers: Collection[threading.Thread],
-) -> None:
-    """Join background workers before releasing even late-created resources."""
+    join_timeout_s: float | None = None,
+) -> bool:
+    """Stop workers and release resources, optionally bounding each join.
+
+    Normal screen navigation waits for loaders so resources created during the
+    transition can still be released. Runtime-fault shutdowns use a timeout:
+    native camera/GPU calls can remain blocked after a USB disconnect, and an
+    unbounded join would prevent the guardian from ever restarting the app.
+    """
     loader_cancelled.set()
+    all_workers_stopped = True
     for worker in workers:
-        worker.join()
+        worker.join(timeout=join_timeout_s)
+        all_workers_stopped = not worker.is_alive() and all_workers_stopped
     _close_eye_background_resources(resources)
+    return all_workers_stopped
 
 
 def _lerp(current: float, target: float, speed: float) -> float:
@@ -587,6 +602,23 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     idle_centering = IdleCentering()
     _fault_event = threading.Event()
     _fault_reason: dict = {"reason": None}
+    _fault_lock = threading.Lock()
+
+    def _signal_runtime_fault(reason: str) -> None:
+        """Start graceful shutdown with a hard-exit fallback for native hangs."""
+        with _fault_lock:
+            if _fault_event.is_set():
+                return
+            _fault_reason["reason"] = reason
+            print(f"[heartbeat] runtime fault: {reason}", flush=True)
+            timer = threading.Timer(
+                FAULT_EXIT_GRACE_SECONDS,
+                os._exit,
+                args=(SENTINEL_EXIT_CODE,),
+            )
+            timer.daemon = True
+            timer.start()
+            _fault_event.set()
 
     def _load_resources_impl():
         from cat_cannon.adapters.camera import open_camera
@@ -731,8 +763,9 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 flush=True,
             )
             traceback.print_exc()
-            _fault_reason["reason"] = f"startup failure: {type(exc).__name__}: {exc}"
-            _fault_event.set()
+            _signal_runtime_fault(
+                f"startup failure: {type(exc).__name__}: {exc}"
+            )
         finally:
             _bg_done.set()
 
@@ -755,6 +788,8 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         fixed_perception_cache = PerceptionCache(
             max_age_seconds=FIXED_PERCEPTION_MAX_AGE_SECONDS
         )
+        fixed_camera_watchdog = CameraReadWatchdog(CAMERA_READ_FAILURE_LIMIT)
+        turret_camera_watchdog = CameraReadWatchdog(CAMERA_READ_FAILURE_LIMIT)
         fixed_detect_interval = max(1, int(config.detect_interval))
         fixed_detection_cadence: FixedDetectionCadence | None = None
 
@@ -810,6 +845,11 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             )
             if _fixed_cam is not None and fixed_detection_due:
                 ok_fixed, fixed_frame = _fixed_cam.read()
+                if fixed_camera_watchdog.record(succeeded=ok_fixed):
+                    raise RuntimeError(
+                        "fixed camera failed "
+                        f"{fixed_camera_watchdog.consecutive_failures} consecutive reads"
+                    )
                 fixed_detection_updated = True
                 if ok_fixed:
                     fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
@@ -857,6 +897,11 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             turret_perception = None
             if _turret_cam is not None:
                 ok_turret, turret_frame = _turret_cam.read()
+                if turret_camera_watchdog.record(succeeded=ok_turret):
+                    raise RuntimeError(
+                        "turret camera failed "
+                        f"{turret_camera_watchdog.consecutive_failures} consecutive reads"
+                    )
                 if ok_turret:
                     turret_perception = _detector.detect(turret_frame, source_id="turret")
                     turret_detections = turret_perception.detections
@@ -952,10 +997,9 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 flush=True,
             )
             traceback.print_exc()
-            _fault_reason["reason"] = (
+            _signal_runtime_fault(
                 f"detection failure: {type(exc).__name__}: {exc}"
             )
-            _fault_event.set()
 
     detect_thread = threading.Thread(target=_detection_loop, daemon=True)
     detect_thread.start()
@@ -995,7 +1039,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 if _live is not None and _live.is_stale():
                     reason = "detection heartbeat stale"
             if reason is not None:
-                _fault_reason["reason"] = reason
+                _signal_runtime_fault(reason)
                 try:
                     if _cfg is not None:
                         post_discord_message(
@@ -1004,7 +1048,6 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                         )
                 except Exception:
                     pass
-                _fault_event.set()
                 break
 
     health_thread = threading.Thread(target=_health_monitor, daemon=True)
@@ -1095,11 +1138,19 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         pass
     finally:
         _detect_running = False
-        shutdown_eye_background_resources(
+        all_workers_stopped = shutdown_eye_background_resources(
             resources=_bg_resources,
             loader_cancelled=_loader_cancelled,
             workers=(loader_thread, detect_thread),
+            join_timeout_s=(
+                FAULT_JOIN_TIMEOUT_SECONDS if _fault_event.is_set() else None
+            ),
         )
+        if not all_workers_stopped:
+            print(
+                "[heartbeat] background worker did not stop; hard-exit fallback armed",
+                flush=True,
+            )
         try:
             health_thread.join(timeout=1.0)
         except Exception:
@@ -1108,8 +1159,6 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
 
     if _fault_event.is_set():
         import sys
-
-        from cat_cannon.app.heartbeat import SENTINEL_EXIT_CODE
 
         reason = _fault_reason.get("reason") or "unknown"
         print(

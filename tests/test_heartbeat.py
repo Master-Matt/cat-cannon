@@ -1,5 +1,6 @@
 from cat_cannon.app.heartbeat import (
     SENTINEL_EXIT_CODE,
+    CameraReadWatchdog,
     FaultReason,
     Liveness,
     MotionConfig,
@@ -48,6 +49,24 @@ def test_process_rss_mb_aggregates_exact_process_names(tmp_path):
 
 def test_process_rss_mb_tolerates_missing_proc_root(tmp_path):
     assert process_rss_mb("gnome-shell", proc_root=tmp_path / "missing") == 0.0
+
+
+def test_camera_read_watchdog_trips_after_consecutive_failures():
+    watchdog = CameraReadWatchdog(max_consecutive_failures=3)
+
+    assert watchdog.record(succeeded=False) is False
+    assert watchdog.record(succeeded=False) is False
+    assert watchdog.record(succeeded=False) is True
+    assert watchdog.consecutive_failures == 3
+
+
+def test_camera_read_watchdog_resets_after_success():
+    watchdog = CameraReadWatchdog(max_consecutive_failures=3)
+
+    watchdog.record(succeeded=False)
+    watchdog.record(succeeded=False)
+    assert watchdog.record(succeeded=True) is False
+    assert watchdog.consecutive_failures == 0
 
 
 def _watchdog(**overrides):

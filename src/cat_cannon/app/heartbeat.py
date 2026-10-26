@@ -87,6 +87,29 @@ class Liveness:
         return self.age(now) > self._timeout_s
 
 
+class CameraReadWatchdog:
+    """Trip when a camera repeatedly returns no frame, resetting on success."""
+
+    def __init__(self, max_consecutive_failures: int) -> None:
+        self._max_consecutive_failures = max(1, int(max_consecutive_failures))
+        self._consecutive_failures = 0
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
+
+    @property
+    def tripped(self) -> bool:
+        return self._consecutive_failures >= self._max_consecutive_failures
+
+    def record(self, *, succeeded: bool) -> bool:
+        if succeeded:
+            self._consecutive_failures = 0
+        else:
+            self._consecutive_failures += 1
+        return self.tripped
+
+
 @dataclass(frozen=True)
 class MotionConfig:
     flow_min_magnitude_px: float = 0.6

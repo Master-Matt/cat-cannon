@@ -123,3 +123,31 @@ def test_eye_shutdown_releases_resources_created_during_navigation() -> None:
 
     assert loader.is_alive() is False
     assert camera.release_calls == 1
+
+
+def test_eye_fault_shutdown_does_not_wait_forever_for_hung_worker() -> None:
+    cancelled = Event()
+    release_worker = Event()
+    camera = SimpleNamespace(release_calls=0)
+
+    def release() -> None:
+        camera.release_calls += 1
+
+    camera.release = release
+    worker = Thread(target=release_worker.wait, daemon=True)
+    worker.start()
+
+    try:
+        all_workers_stopped = shutdown_eye_background_resources(
+            resources={"turret_camera": camera},
+            loader_cancelled=cancelled,
+            workers=(worker,),
+            join_timeout_s=0.01,
+        )
+
+        assert all_workers_stopped is False
+        assert worker.is_alive() is True
+        assert camera.release_calls == 1
+    finally:
+        release_worker.set()
+        worker.join(timeout=1.0)
