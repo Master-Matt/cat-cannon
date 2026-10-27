@@ -19,6 +19,9 @@ from pathlib import Path
 # (hang / no motion) and exited on purpose — please restart me". Chosen from the
 # 64-78 sysexits range to avoid clashing with ordinary crashes.
 SENTINEL_EXIT_CODE = 70
+# A distinct code tells the guardian that restarting only the app cannot fix
+# the fault (currently used for GNOME/compositor memory pressure).
+REBOOT_SENTINEL_EXIT_CODE = 71
 
 
 def process_rss_mb(

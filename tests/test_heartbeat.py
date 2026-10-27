@@ -1,4 +1,5 @@
 from cat_cannon.app.heartbeat import (
+    REBOOT_SENTINEL_EXIT_CODE,
     SENTINEL_EXIT_CODE,
     CameraReadWatchdog,
     FaultReason,
@@ -14,6 +15,7 @@ from cat_cannon.app.heartbeat import (
 
 def test_sentinel_exit_code_is_stable():
     assert SENTINEL_EXIT_CODE == 70
+    assert REBOOT_SENTINEL_EXIT_CODE == 71
 
 
 def test_fault_reasons():

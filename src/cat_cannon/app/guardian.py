@@ -18,6 +18,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from cat_cannon.app.heartbeat import (
+    REBOOT_SENTINEL_EXIT_CODE,
     SENTINEL_EXIT_CODE,
     RestartDecision,
     RestartPolicy,
@@ -98,8 +99,30 @@ class Guardian:
                 print("[guardian] app exited cleanly; stopping", flush=True)
                 return 0
 
-            reason = "runtime watchdog" if exit_code == SENTINEL_EXIT_CODE else "crash"
-            decision = self._policy.record_fault(reason, now=self._clock())
+            if (
+                exit_code == REBOOT_SENTINEL_EXIT_CODE
+                and self._heartbeat.reboot_enabled
+            ):
+                reason = "desktop memory pressure"
+                self._policy.clear()
+                self._notifier(
+                    "🔁 Cat Cannon requires a machine reboot "
+                    f"({reason}); rebooting now."
+                )
+                print(
+                    "[guardian] desktop memory pressure; rebooting machine",
+                    flush=True,
+                )
+                self._rebooter()
+                self._sleep(self._config.restart_backoff_s)
+                return REBOOT_SENTINEL_EXIT_CODE
+
+            if exit_code == REBOOT_SENTINEL_EXIT_CODE:
+                reason = "desktop memory pressure"
+                decision = RestartDecision.RESTART
+            else:
+                reason = "runtime watchdog" if exit_code == SENTINEL_EXIT_CODE else "crash"
+                decision = self._policy.record_fault(reason, now=self._clock())
 
             if decision is RestartDecision.REBOOT:
                 self._notifier(

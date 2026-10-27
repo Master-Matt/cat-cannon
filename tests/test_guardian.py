@@ -1,5 +1,6 @@
 from cat_cannon.app.guardian import Guardian, GuardianConfig
 from cat_cannon.app.heartbeat import (
+    REBOOT_SENTINEL_EXIT_CODE,
     SENTINEL_EXIT_CODE,
     RestartPolicy,
     RestartPolicyConfig,
@@ -74,6 +75,18 @@ def test_sentinel_triggers_restart_and_notify():
     assert rec.runs == 2
     assert any("runtime watchdog" in m for m in rec.messages)
     assert rec.reboots == 0
+
+
+def test_reboot_sentinel_reboots_immediately_without_restart_churn():
+    heartbeat = HeartbeatConfig(reboot_enabled=True)
+    rec = _Recorder([REBOOT_SENTINEL_EXIT_CODE])
+
+    rc = _guardian(rec, heartbeat=heartbeat).run_forever()
+
+    assert rc == REBOOT_SENTINEL_EXIT_CODE
+    assert rec.runs == 1
+    assert rec.reboots == 1
+    assert any("desktop memory pressure" in message for message in rec.messages)
 
 
 def test_crash_triggers_restart_with_crash_reason():

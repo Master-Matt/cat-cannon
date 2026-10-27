@@ -14,7 +14,8 @@ from typing import Any, Literal, Protocol
 import numpy as np
 
 from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
-from cat_cannon.app.heartbeat import SENTINEL_EXIT_CODE, CameraReadWatchdog
+from cat_cannon.app.camera_recovery import RecoveringCamera
+from cat_cannon.app.heartbeat import REBOOT_SENTINEL_EXIT_CODE, SENTINEL_EXIT_CODE
 from cat_cannon.app.idle_motion import IdleCentering
 from cat_cannon.app.perception_cache import PerceptionCache
 from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, EventRecordingConfig, YoloPrompt
@@ -23,7 +24,6 @@ from cat_cannon.domain.safety import DetectionPolicy
 
 ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 FIXED_PERCEPTION_MAX_AGE_SECONDS = 1.0
-CAMERA_READ_FAILURE_LIMIT = 5
 FAULT_JOIN_TIMEOUT_SECONDS = 1.0
 FAULT_EXIT_GRACE_SECONDS = 5.0
 
@@ -602,19 +602,25 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
     idle_centering = IdleCentering()
     _fault_event = threading.Event()
     _fault_reason: dict = {"reason": None}
+    _fault_exit_code: dict = {"code": SENTINEL_EXIT_CODE}
     _fault_lock = threading.Lock()
 
-    def _signal_runtime_fault(reason: str) -> None:
+    def _signal_runtime_fault(
+        reason: str,
+        *,
+        exit_code: int = SENTINEL_EXIT_CODE,
+    ) -> None:
         """Start graceful shutdown with a hard-exit fallback for native hangs."""
         with _fault_lock:
             if _fault_event.is_set():
                 return
             _fault_reason["reason"] = reason
+            _fault_exit_code["code"] = exit_code
             print(f"[heartbeat] runtime fault: {reason}", flush=True)
             timer = threading.Timer(
                 FAULT_EXIT_GRACE_SECONDS,
                 os._exit,
-                args=(SENTINEL_EXIT_CODE,),
+                args=(exit_code,),
             )
             timer.daemon = True
             timer.start()
@@ -648,16 +654,28 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         except Exception:
             _bg_resources["zones"] = []
 
-        # Open fixed camera (for zone detection)
-        fixed_camera = None
-        try:
-            fixed_camera = open_camera(
+        def _keep_detection_alive() -> None:
+            live = _hb.get("live")
+            if live is not None:
+                live.beat()
+
+        def _open_fixed_camera():
+            return open_camera(
                 cv2,
                 config.fixed_camera,
                 width=config.fixed_camera_width,
                 height=config.fixed_camera_height,
                 fps=config.camera_fps,
                 rotate_180=False,
+            )
+
+        # Open fixed camera (for zone detection)
+        try:
+            fixed_camera = RecoveringCamera(
+                _open_fixed_camera(),
+                reopen=_open_fixed_camera,
+                name="fixed",
+                keepalive=_keep_detection_alive,
             )
         except (Exception, SystemExit) as exc:
             raise RuntimeError(
@@ -668,20 +686,29 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             return
 
         # Open turret camera
+        turret_device = config.turret_camera
         turret_camera = None
-        if config.turret_camera:
-            try:
-                turret_camera = open_camera(
+        if turret_device is not None:
+            def _open_turret_camera():
+                return open_camera(
                     cv2,
-                    config.turret_camera,
+                    turret_device,
                     width=config.turret_camera_width,
                     height=config.turret_camera_height,
                     fps=config.camera_fps,
                     rotate_180=config.turret_rotate_180,
                 )
+
+            try:
+                turret_camera = RecoveringCamera(
+                    _open_turret_camera(),
+                    reopen=_open_turret_camera,
+                    name="turret",
+                    keepalive=_keep_detection_alive,
+                )
             except (Exception, SystemExit) as exc:
                 raise RuntimeError(
-                    f"turret camera unavailable: {config.turret_camera}"
+                    f"turret camera unavailable: {turret_device}"
                 ) from exc
         _bg_resources["turret_camera"] = turret_camera
         if _loader_cancelled.is_set():
@@ -788,8 +815,6 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         fixed_perception_cache = PerceptionCache(
             max_age_seconds=FIXED_PERCEPTION_MAX_AGE_SECONDS
         )
-        fixed_camera_watchdog = CameraReadWatchdog(CAMERA_READ_FAILURE_LIMIT)
-        turret_camera_watchdog = CameraReadWatchdog(CAMERA_READ_FAILURE_LIMIT)
         fixed_detect_interval = max(1, int(config.detect_interval))
         fixed_detection_cadence: FixedDetectionCadence | None = None
 
@@ -845,11 +870,6 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             )
             if _fixed_cam is not None and fixed_detection_due:
                 ok_fixed, fixed_frame = _fixed_cam.read()
-                if fixed_camera_watchdog.record(succeeded=ok_fixed):
-                    raise RuntimeError(
-                        "fixed camera failed "
-                        f"{fixed_camera_watchdog.consecutive_failures} consecutive reads"
-                    )
                 fixed_detection_updated = True
                 if ok_fixed:
                     fixed_perception = _detector.detect(fixed_frame, source_id="fixed")
@@ -897,11 +917,6 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             turret_perception = None
             if _turret_cam is not None:
                 ok_turret, turret_frame = _turret_cam.read()
-                if turret_camera_watchdog.record(succeeded=ok_turret):
-                    raise RuntimeError(
-                        "turret camera failed "
-                        f"{turret_camera_watchdog.consecutive_failures} consecutive reads"
-                    )
                 if ok_turret:
                     turret_perception = _detector.detect(turret_frame, source_id="turret")
                     turret_detections = turret_perception.detections
@@ -1016,6 +1031,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                 # offline, so suppress heartbeat-driven restarts.
                 continue
             reason = None
+            exit_code = SENTINEL_EXIT_CODE
             _session = _bg_resources.get("session")
             if _session is not None and _session.faulted:
                 reason = (
@@ -1033,18 +1049,25 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
                         f"gnome-shell RSS {desktop_rss_mb:.0f} MB "
                         f"exceeds {rss_limit_mb:.0f} MB"
                     )
+                    exit_code = REBOOT_SENTINEL_EXIT_CODE
 
             if reason is None and _hb["active"]:
                 _live = _hb["live"]
                 if _live is not None and _live.is_stale():
                     reason = "detection heartbeat stale"
             if reason is not None:
-                _signal_runtime_fault(reason)
+                _signal_runtime_fault(reason, exit_code=exit_code)
                 try:
                     if _cfg is not None:
+                        action = (
+                            "rebooting"
+                            if exit_code == REBOOT_SENTINEL_EXIT_CODE
+                            else "restarting"
+                        )
                         post_discord_message(
                             _cfg.resolved_discord_webhook_url(),
-                            f"\u26a0\ufe0f Cat Cannon runtime fault ({reason}) \u2014 restarting.",
+                            f"\u26a0\ufe0f Cat Cannon runtime fault ({reason}) "
+                            f"\u2014 {action}.",
                         )
                 except Exception:
                     pass
@@ -1161,10 +1184,11 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         import sys
 
         reason = _fault_reason.get("reason") or "unknown"
+        exit_code = int(_fault_exit_code["code"])
         print(
-            f"[heartbeat] fault ({reason}); exiting {SENTINEL_EXIT_CODE} for guardian",
+            f"[heartbeat] fault ({reason}); exiting {exit_code} for guardian",
             flush=True,
         )
-        sys.exit(SENTINEL_EXIT_CODE)
+        sys.exit(exit_code)
 
     return next_screen
