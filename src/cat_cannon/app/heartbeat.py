@@ -11,7 +11,9 @@ from __future__ import annotations
 import enum
 import json
 import os
+import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +54,44 @@ def process_rss_mb(
         except (OSError, ValueError):
             continue
     return total_kb / 1024.0
+
+
+def terminate_processes_by_name(
+    process_name: str,
+    *,
+    proc_root: str | Path = "/proc",
+    terminator: Callable[[int, int], None] = os.kill,
+    sig: int = signal.SIGTERM,
+) -> int:
+    """Signal processes whose Linux ``Name`` exactly matches ``process_name``.
+
+    Returns the number of processes successfully signalled. Processes can exit
+    while ``/proc`` is scanned, so disappearing or unreadable entries are
+    ignored instead of turning a recoverable desktop fault into an app crash.
+    """
+    try:
+        process_dirs = sorted(Path(proc_root).iterdir(), key=lambda path: path.name)
+    except OSError:
+        return 0
+
+    signalled = 0
+    for process_dir in process_dirs:
+        if not process_dir.name.isdigit():
+            continue
+        try:
+            name = ""
+            for line in (process_dir / "status").read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key == "Name":
+                    name = value.strip()
+                    break
+            if name != process_name:
+                continue
+            terminator(int(process_dir.name), sig)
+            signalled += 1
+        except (OSError, ValueError):
+            continue
+    return signalled
 
 
 class FaultReason(enum.Enum):

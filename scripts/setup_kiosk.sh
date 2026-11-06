@@ -82,7 +82,24 @@ configure_gnome() {
   gsettings set org.gnome.settings-daemon.plugins.power idle-dim false || true
 }
 
-# --- 4. Disable apport crash pop-ups -----------------------------------------
+# --- 4. Disable GUI software updater processes -------------------------------
+configure_gui_updaters() {
+  local autostart_dir="$HOME/.config/autostart"
+  mkdir -p "$autostart_dir"
+  for entry in update-notifier.desktop gnome-software-service.desktop; do
+    if [[ ! -f "/etc/xdg/autostart/$entry" ]]; then
+      continue
+    fi
+    log "Disabling kiosk GUI updater autostart: $entry"
+    printf '%s\n' \
+      '[Desktop Entry]' \
+      'Type=Application' \
+      'Hidden=true' \
+      > "$autostart_dir/$entry"
+  done
+}
+
+# --- 5. Disable apport crash pop-ups -----------------------------------------
 configure_apport() {
   if [[ -f /etc/default/apport ]]; then
     log "Disabling apport crash pop-ups"
@@ -91,7 +108,7 @@ configure_apport() {
   fi
 }
 
-# --- 5. Force the display always-on (flaky-EDID panel) -----------------------
+# --- 6. Force the display always-on (flaky-EDID panel) -----------------------
 # The Jetson's nvidia/Tegra driver intermittently drops the panel a few seconds
 # after boot because the panel's DDC/EDID is flaky (the kernel reports the
 # output connected but with 0 bytes of EDID). When that happens X keeps running
@@ -182,7 +199,7 @@ PY
   log "Patched $xorg nvidia Device section (ConnectedMonitor + CustomEDID + ModeValidation)"
 }
 
-# --- 6. Passwordless reboot for the guardian ---------------------------------
+# --- 7. Passwordless reboot for the guardian ---------------------------------
 configure_sudoers_reboot() {
   local dropin=/etc/sudoers.d/cat-cannon-reboot
   log "Granting passwordless 'systemctl reboot' to '$KIOSK_USER'"
@@ -199,6 +216,7 @@ main() {
   configure_autologin
   configure_autostart
   configure_gnome
+  configure_gui_updaters
   configure_apport
   configure_display
   configure_sudoers_reboot

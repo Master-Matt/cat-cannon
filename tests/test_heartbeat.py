@@ -10,6 +10,7 @@ from cat_cannon.app.heartbeat import (
     RestartPolicy,
     RestartPolicyConfig,
     process_rss_mb,
+    terminate_processes_by_name,
 )
 
 
@@ -51,6 +52,50 @@ def test_process_rss_mb_aggregates_exact_process_names(tmp_path):
 
 def test_process_rss_mb_tolerates_missing_proc_root(tmp_path):
     assert process_rss_mb("gnome-shell", proc_root=tmp_path / "missing") == 0.0
+
+
+def test_terminate_processes_by_name_signals_only_exact_matches(tmp_path):
+    for pid, name in (
+        ("100", "gnome-shell"),
+        ("101", "gnome-shell"),
+        ("102", "gnome-software"),
+        ("not-a-pid", "gnome-shell"),
+    ):
+        process_dir = tmp_path / pid
+        process_dir.mkdir()
+        (process_dir / "status").write_text(
+            f"Name:\t{name}\nVmRSS:\t2048 kB\n",
+            encoding="utf-8",
+        )
+
+    signals = []
+
+    count = terminate_processes_by_name(
+        "gnome-shell",
+        proc_root=tmp_path,
+        terminator=lambda pid, sig: signals.append((pid, sig)),
+    )
+
+    assert count == 2
+    assert [pid for pid, _ in signals] == [100, 101]
+
+
+def test_terminate_processes_by_name_tolerates_process_exit(tmp_path):
+    process_dir = tmp_path / "100"
+    process_dir.mkdir()
+    (process_dir / "status").write_text(
+        "Name:\tgnome-shell\nVmRSS:\t2048 kB\n",
+        encoding="utf-8",
+    )
+
+    def process_already_exited(_pid, _sig):
+        raise ProcessLookupError
+
+    assert terminate_processes_by_name(
+        "gnome-shell",
+        proc_root=tmp_path,
+        terminator=process_already_exited,
+    ) == 0
 
 
 def test_camera_read_watchdog_trips_after_consecutive_failures():

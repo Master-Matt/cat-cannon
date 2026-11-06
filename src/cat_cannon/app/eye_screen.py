@@ -15,7 +15,11 @@ import numpy as np
 
 from cat_cannon.adapters.ultralytics_yolo import DEFAULT_YOLO_IMGSZ
 from cat_cannon.app.camera_recovery import RecoveringCamera
-from cat_cannon.app.heartbeat import REBOOT_SENTINEL_EXIT_CODE, SENTINEL_EXIT_CODE
+from cat_cannon.app.heartbeat import (
+    REBOOT_SENTINEL_EXIT_CODE,
+    SENTINEL_EXIT_CODE,
+    terminate_processes_by_name,
+)
 from cat_cannon.app.idle_motion import IdleCentering
 from cat_cannon.app.perception_cache import PerceptionCache
 from cat_cannon.config import DEFAULT_YOLOE_PROMPTS, EventRecordingConfig, YoloPrompt
@@ -26,6 +30,7 @@ ScreenName = Literal["eye", "zone_calibration", "tracking_test"]
 FIXED_PERCEPTION_MAX_AGE_SECONDS = 1.0
 FAULT_JOIN_TIMEOUT_SECONDS = 1.0
 FAULT_EXIT_GRACE_SECONDS = 5.0
+DESKTOP_RECOVERY_COOLDOWN_SECONDS = 30.0
 
 
 def _require_cv2():
@@ -1024,6 +1029,7 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
         from cat_cannon.app.heartbeat import process_rss_mb
         from cat_cannon.app.notify import post_discord_message
 
+        desktop_recovery_cooldown_until = 0.0
         while _detect_running and not _fault_event.is_set():
             time.sleep(0.5)
             if not state.armed:
@@ -1043,12 +1049,33 @@ def run_eye_screen(config: EyeConfig) -> ScreenName | None:
             if reason is None and _cfg is not None and _cfg.enabled:
                 rss_limit_mb = _cfg.desktop_rss_limit_mb
                 desktop_rss_mb = process_rss_mb("gnome-shell")
-                if rss_limit_mb > 0.0 and desktop_rss_mb > rss_limit_mb:
+                memory_pressure = rss_limit_mb > 0.0 and desktop_rss_mb > rss_limit_mb
+                recovery_ready = time.monotonic() >= desktop_recovery_cooldown_until
+                if memory_pressure and recovery_ready:
                     reason = (
                         "desktop memory pressure: "
                         f"gnome-shell RSS {desktop_rss_mb:.0f} MB "
                         f"exceeds {rss_limit_mb:.0f} MB"
                     )
+                    signalled = terminate_processes_by_name("gnome-shell")
+                    if signalled:
+                        desktop_recovery_cooldown_until = (
+                            time.monotonic() + DESKTOP_RECOVERY_COOLDOWN_SECONDS
+                        )
+                        print(
+                            f"[heartbeat] {reason}; recycled {signalled} desktop shell "
+                            "process(es) without restarting the app",
+                            flush=True,
+                        )
+                        try:
+                            post_discord_message(
+                                _cfg.resolved_discord_webhook_url(),
+                                f"\u26a0\ufe0f Cat Cannon recovered from {reason} by "
+                                "recycling the desktop shell; the app stayed running.",
+                            )
+                        except Exception:
+                            pass
+                        continue
                     exit_code = REBOOT_SENTINEL_EXIT_CODE
 
             if reason is None and _hb["active"]:
